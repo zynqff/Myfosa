@@ -1,0 +1,74 @@
+workflows:
+  build-app-unsigned-ipa:
+    name: Build Myfosa (Vendor/llama.xcframework from repo)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    triggering:
+      events: [push, tag]
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Verify Vendor/llama.xcframework is present in repo
+        script: |
+          set -euo pipefail
+          ROOT="$CM_BUILD_DIR"
+          XCFW="$ROOT/Vendor/llama.xcframework"
+
+          test -f "$XCFW/ios-arm64/libllama.a" || {
+            echo "ОШИБКА: $XCFW/ios-arm64/libllama.a не найден."
+            echo "Ожидается, что llama.xcframework уже закоммичен в Vendor/ репозитория."
+            exit 1
+          }
+          test -f "$XCFW/ios-arm64/Headers/llama.h" || {
+            echo "ОШИБКА: $XCFW/ios-arm64/Headers/llama.h не найден."
+            exit 1
+          }
+
+          echo "=== module.modulemap ==="
+          cat "$XCFW/ios-arm64/Headers/module.modulemap" 2>/dev/null || echo "(module.modulemap отсутствует)"
+
+          echo "llama.xcframework из репозитория найден и выглядит корректно."
+
+      - name: Build Myfosa.app unsigned
+        script: |
+          set -euo pipefail
+          ROOT="$CM_BUILD_DIR"
+          BUILD_DIR="$ROOT/build/Release-iphoneos"
+          XCFW="$ROOT/Vendor/llama.xcframework"
+          LIB_DIR="$XCFW/ios-arm64"
+          HDRS="$LIB_DIR/Headers"
+          MODMAP="$HDRS/module.modulemap"
+          rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
+          xcodebuild build \
+            -project "$ROOT/Myfosa.xcodeproj" \
+            -target Myfosa \
+            -configuration Release \
+            -sdk iphoneos \
+            CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO \
+            HEADER_SEARCH_PATHS="$HDRS" \
+            LIBRARY_SEARCH_PATHS="$LIB_DIR" \
+            OTHER_SWIFT_FLAGS="-Xcc -fmodule-map-file=$MODMAP -Xcc -I$HDRS" \
+            OTHER_LDFLAGS="-lllama -lc++ -framework Accelerate"
+          test -d "$BUILD_DIR/Myfosa.app"
+          echo "APP_PATH=$BUILD_DIR/Myfosa.app" >> "$CM_ENV"
+
+      - name: Package unsigned IPA
+        script: |
+          set -euo pipefail
+          ROOT="$CM_BUILD_DIR"
+          OUT="$ROOT/build"
+          rm -rf "$OUT/Payload" && mkdir -p "$OUT/Payload"
+          cp -R "$APP_PATH" "$OUT/Payload/Myfosa.app"
+          cd "$OUT"
+          zip -r -y Myfosa-unsigned.ipa Payload >/dev/null
+    artifacts:
+      - build/Myfosa-unsigned.ipa

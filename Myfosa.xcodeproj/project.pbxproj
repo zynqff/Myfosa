@@ -1,0 +1,126 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		000000000000000020000000 /* MyfosaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000000; };
+		000000000000000020000001 /* Translation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000001; };
+		000000000000000020000002 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000002; };
+		000000000000000020000003 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000003; };
+		000000000000000020000004 /* ModelDownloadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000004; };
+		000000000000000020000005 /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000005; };
+		000000000000000020000006 /* TranslatorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000006; };
+		000000000000000020000007 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000007; };
+		000000000000000020000008 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000008; };
+		000000000000000020000009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000009; };
+		00000000000000002000000A /* TranslationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000001000000A; };
+		00000000000000002000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000001000000B; };
+		00000000000000002000000C /* PrivacyPolicyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000001000000C; };
+		00000000000000002000000D /* TranslationCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000001000000D; };
+		00000000000000002000000E /* DownloadPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000001000000E; };
+		00000000000000002000000F /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000001000000F; };
+		000000000000000020000010 /* PhotoTranslateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000010; };
+		000000000000000020000011 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000011; };
+		000000000000000020000012 /* MyfosaTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000012; };
+		000000000000000020000013 /* CameraService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000013; };
+		000000000000000020000014 /* CameraPreviewLayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000014; };
+		000000000000000020000015 /* TextRecognitionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000015; };
+		000000000000000020000016 /* SpeechSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000016; };
+		000000000000000020000017 /* PhotoResultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000017; };
+		000000000000000020000018 /* CompactTranslateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000018; };
+		000000000000000010000000 /* MyfosaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyfosaApp.swift; sourceTree = "<group>"; };
+		000000000000000010000001 /* Translation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/Translation.swift; sourceTree = "<group>"; };
+		000000000000000010000002 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AppConfig.swift; sourceTree = "<group>"; };
+		000000000000000010000003 /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/HistoryStore.swift; sourceTree = "<group>"; };
+		000000000000000010000004 /* ModelDownloadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/ModelDownloadService.swift; sourceTree = "<group>"; };
+		000000000000000010000005 /* ModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/ModelStore.swift; sourceTree = "<group>"; };
+		000000000000000010000006 /* TranslatorService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/TranslatorService.swift; sourceTree = "<group>"; };
+		000000000000000010000007 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModel.swift; sourceTree = "<group>"; };
+		000000000000000010000008 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/OnboardingView.swift; sourceTree = "<group>"; };
+		000000000000000010000009 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SettingsView.swift; sourceTree = "<group>"; };
+		00000000000000001000000A /* TranslationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/TranslationView.swift; sourceTree = "<group>"; };
+		00000000000000001000000B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		00000000000000001000000C /* PrivacyPolicyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PrivacyPolicyView.swift; sourceTree = "<group>"; };
+		00000000000000001000000D /* TranslationCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/TranslationCardView.swift; sourceTree = "<group>"; };
+		00000000000000001000000E /* DownloadPromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/DownloadPromptView.swift; sourceTree = "<group>"; };
+		00000000000000001000000F /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/HistoryView.swift; sourceTree = "<group>"; };
+		000000000000000010000010 /* PhotoTranslateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PhotoTranslateView.swift; sourceTree = "<group>"; };
+		000000000000000010000011 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/MainTabView.swift; sourceTree = "<group>"; };
+		000000000000000010000012 /* MyfosaTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyfosaTheme.swift; sourceTree = "<group>"; };
+		000000000000000010000013 /* CameraService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/CameraService.swift; sourceTree = "<group>"; };
+		000000000000000010000014 /* CameraPreviewLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/CameraPreviewLayerView.swift; sourceTree = "<group>"; };
+		000000000000000010000015 /* TextRecognitionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/TextRecognitionService.swift; sourceTree = "<group>"; };
+		000000000000000010000016 /* SpeechSynthesizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SpeechSynthesizer.swift; sourceTree = "<group>"; };
+		000000000000000010000017 /* PhotoResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PhotoResultView.swift; sourceTree = "<group>"; };
+		000000000000000010000018 /* CompactTranslateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/CompactTranslateView.swift; sourceTree = "<group>"; };
+		300000000000000000000001 /* Myfosa.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Myfosa.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		300000000000000000000002 /* Myfosa */ = {isa = PBXGroup; children = (
+			000000000000000010000000 /* MyfosaApp.swift */,
+			000000000000000010000001 /* Translation.swift */,
+			000000000000000010000002 /* AppConfig.swift */,
+			000000000000000010000003 /* HistoryStore.swift */,
+			000000000000000010000004 /* ModelDownloadService.swift */,
+			000000000000000010000005 /* ModelStore.swift */,
+			000000000000000010000006 /* TranslatorService.swift */,
+			000000000000000010000007 /* ViewModel.swift */,
+			000000000000000010000008 /* OnboardingView.swift */,
+			000000000000000010000009 /* SettingsView.swift */,
+			00000000000000001000000A /* TranslationView.swift */,
+			00000000000000001000000B /* Assets.xcassets */,
+			00000000000000001000000C /* PrivacyPolicyView.swift */,
+			00000000000000001000000D /* TranslationCardView.swift */,
+			00000000000000001000000E /* DownloadPromptView.swift */,
+			00000000000000001000000F /* HistoryView.swift */,
+			000000000000000010000010 /* PhotoTranslateView.swift */,
+			000000000000000010000011 /* MainTabView.swift */,
+			000000000000000010000012 /* MyfosaTheme.swift */,
+			000000000000000010000013 /* CameraService.swift */,
+			000000000000000010000014 /* CameraPreviewLayerView.swift */,
+			000000000000000010000015 /* TextRecognitionService.swift */,
+			000000000000000010000016 /* SpeechSynthesizer.swift */,
+			000000000000000010000017 /* PhotoResultView.swift */,
+			000000000000000010000018 /* CompactTranslateView.swift */,
+		); path = Myfosa; sourceTree = "<group>"; };
+		300000000000000000000003 /* Products */ = {isa = PBXGroup; children = (300000000000000000000001 /* Myfosa.app */,); name = Products; sourceTree = "<group>"; };
+		300000000000000000000004 /* Myfosa */ = {isa = PBXNativeTarget; buildConfigurationList = 300000000000000000000007 /* Build configuration list for PBXNativeTarget "Myfosa" */; buildPhases = (300000000000000000000005 /* Sources */, 300000000000000000000006 /* Frameworks */, 300000000000000000000015 /* Resources */,); buildRules = (); dependencies = (); name = Myfosa; productName = Myfosa; productReference = 300000000000000000000001 /* Myfosa.app */; productType = "com.apple.product-type.application"; };
+		300000000000000000000008 /* Project */ = {isa = PBXProject; attributes = {LastUpgradeCheck = 1600; TargetAttributes = {300000000000000000000004 = {CreatedOnToolsVersion = 16.0;};};}; buildConfigurationList = 300000000000000000000009 /* Build configuration list for PBXProject "Myfosa" */; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base,); mainGroup = 300000000000000000000010; productRefGroup = 300000000000000000000003 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (300000000000000000000004 /* Myfosa */,); };
+		300000000000000000000010 /* Main Group */ = {isa = PBXGroup; children = (300000000000000000000002 /* Myfosa */, 300000000000000000000003 /* Products */,); sourceTree = "<group>"; };
+		300000000000000000000005 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			000000000000000020000000 /* MyfosaApp.swift in Sources */,
+			000000000000000020000001 /* Translation.swift in Sources */,
+			000000000000000020000002 /* AppConfig.swift in Sources */,
+			000000000000000020000003 /* HistoryStore.swift in Sources */,
+			000000000000000020000004 /* ModelDownloadService.swift in Sources */,
+			000000000000000020000005 /* ModelStore.swift in Sources */,
+			000000000000000020000006 /* TranslatorService.swift in Sources */,
+			000000000000000020000007 /* ViewModel.swift in Sources */,
+			000000000000000020000008 /* OnboardingView.swift in Sources */,
+			000000000000000020000009 /* SettingsView.swift in Sources */,
+			00000000000000002000000A /* TranslationView.swift in Sources */,
+			00000000000000002000000C /* PrivacyPolicyView.swift in Sources */,
+			00000000000000002000000D /* TranslationCardView.swift in Sources */,
+			00000000000000002000000E /* DownloadPromptView.swift in Sources */,
+			00000000000000002000000F /* HistoryView.swift in Sources */,
+			000000000000000020000010 /* PhotoTranslateView.swift in Sources */,
+			000000000000000020000011 /* MainTabView.swift in Sources */,
+			000000000000000020000012 /* MyfosaTheme.swift in Sources */,
+			000000000000000020000013 /* CameraService.swift in Sources */,
+			000000000000000020000014 /* CameraPreviewLayerView.swift in Sources */,
+			000000000000000020000015 /* TextRecognitionService.swift in Sources */,
+			000000000000000020000016 /* SpeechSynthesizer.swift in Sources */,
+			000000000000000020000017 /* PhotoResultView.swift in Sources */,
+			000000000000000020000018 /* CompactTranslateView.swift in Sources */,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		300000000000000000000006 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		300000000000000000000015 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
+			00000000000000002000000B /* Assets.xcassets in Resources */,); runOnlyForDeploymentPostprocessing = 0; };
+		300000000000000000000009 /* Build configuration list for PBXProject "Myfosa" */ = {isa = XCConfigurationList; buildConfigurations = (300000000000000000000011, 300000000000000000000012,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		300000000000000000000007 /* Build configuration list for PBXNativeTarget "Myfosa" */ = {isa = XCConfigurationList; buildConfigurations = (300000000000000000000013, 300000000000000000000014,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		300000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SWIFT_VERSION = 5.9; }; name = Debug; };
+		300000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; IPHONEOS_DEPLOYMENT_TARGET = 16.0; SWIFT_VERSION = 5.9; }; name = Release; };
+		300000000000000000000013 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = NO; HEADER_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Vendor/llama.xcframework/ios-arm64/Headers"); LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Vendor/llama.xcframework/ios-arm64"); INFOPLIST_FILE = Myfosa/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 16.0; OTHER_LDFLAGS = ("$(inherited)", "-lllama_combined", "-lc++"); PRODUCT_BUNDLE_IDENTIFIER = com.SiaSoft.Myfosa; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.9; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		300000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = NO; HEADER_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Vendor/llama.xcframework/ios-arm64/Headers"); LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Vendor/llama.xcframework/ios-arm64"); INFOPLIST_FILE = Myfosa/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 16.0; OTHER_LDFLAGS = ("$(inherited)", "-lllama_combined", "-lc++"); PRODUCT_BUNDLE_IDENTIFIER = com.SiaSoft.Myfosa; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.9; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+	};
+	rootObject = 300000000000000000000008 /* Project */;
+}

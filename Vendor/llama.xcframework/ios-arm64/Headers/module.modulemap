@@ -1,0 +1,4 @@
+module llama {
+    header "llama.h"
+    export *
+}
