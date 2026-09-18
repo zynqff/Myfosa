@@ -2,8 +2,8 @@ import SwiftUI
 import AVFoundation
 
 /// Показывает сделанное/выбранное фото с переводом, наложенным поверх области
-/// исходного текста. Вся область перевода теперь является одним сплошным полем:
-/// внутри сохраняются переносы строк и интервалы между строками исходного текста.
+/// исходного текста. Связные строки объединяются в одно поле, а разнесённые
+/// области текста получают отдельные поля.
 struct PhotoResultView: View {
     let image: UIImage
     @EnvironmentObject var vm: TranslatorViewModel
@@ -13,7 +13,7 @@ struct PhotoResultView: View {
     @State private var isPreparingModel = false
     @State private var errorMessage: String?
     @State private var translatedText = ""
-    @State private var textRect: CGRect?
+    @State private var displayFields: [DisplayField] = []
     @State private var zoomScale: CGFloat = 1
     @State private var contentOffset: CGSize = .zero
     @State private var gestureStartScale: CGFloat = 1
@@ -39,10 +39,11 @@ struct PhotoResultView: View {
                             .scaledToFit()
                             .frame(width: geo.size.width, height: geo.size.height)
 
-                        if let textRect, !translatedText.isEmpty {
-                            let field = displayField(for: textRect, in: displayRect)
-                            translatedField(field)
-                                .transition(.opacity)
+                        if !displayFields.isEmpty {
+                            ForEach(displayFields) { field in
+                                translatedField(field, in: displayRect)
+                                    .transition(.opacity)
+                            }
                         }
                     }
                     .scaleEffect(zoomScale)
@@ -116,45 +117,225 @@ struct PhotoResultView: View {
         }
     }
 
-    private struct DisplayField {
-        let rect: CGRect
+    private struct DisplayField: Identifiable {
+        let id = UUID()
+        let text: String
+        /// Прямоугольник в нормализованных координатах изображения (0...1).
+        let normalizedRect: CGRect
+        /// Наклон исходной строки в экранных координатах.
         let angle: Double
-        let lineCount: Int
     }
 
-    /// Единое поле строится по всей области распознанного текста, а не отдельно
-    /// для каждой строки. Поэтому фон перевода получается сплошным и внутри него
-    /// можно нормально управлять переносами, отступами и межстрочным интервалом.
-    private func displayField(for rect: CGRect, in displayRect: CGRect) -> DisplayField {
-        let field = CGRect(
-            x: displayRect.minX + rect.minX * displayRect.width,
-            y: displayRect.minY + (1 - rect.maxY) * displayRect.height,
-            width: rect.width * displayRect.width,
-            height: rect.height * displayRect.height
+    /// Собирает строки Vision в логические группы. Если строки находятся в одной
+    /// текстовой области и образуют единый блок, перевод выводится одним полем.
+    /// Разнесённые по фотографии области остаются отдельными полями.
+    private func displayFields(for blocks: [RecognizedTextBlock], translated: [String]) -> [DisplayField] {
+        struct Group {
+            var indices: [Int]
+            var rect: CGRect
+            var angle: Double
+        }
+
+        guard !blocks.isEmpty else { return [] }
+
+        var groups: [Group] = []
+
+        for index in blocks.indices {
+            let block = blocks[index]
+            let rect = normalizedRect(for: block)
+            let angle = textAngle(for: block)
+            var bestGroup: Int?
+            var bestScore = -Double.infinity
+
+            for groupIndex in groups.indices {
+                let group = groups[groupIndex]
+                let angleDelta = abs(normalizedAngle(angle - group.angle))
+                guard angleDelta < .pi / 12 else { continue } // до 15°
+
+                let expanded = group.rect.insetBy(dx: -max(rect.width, group.rect.width) * 0.18,
+                                                   dy: -max(rect.height, group.rect.height) * 0.75)
+                let xOverlap = horizontalOverlap(rect, group.rect)
+                let closeEnough = expanded.intersects(rect) || xOverlap > 0.35
+                guard closeEnough else { continue }
+
+                // Сильнее предпочитаем строки, которые реально находятся одна
+                // над другой/рядом и имеют заметное горизонтальное пересечение.
+                let verticalGap = verticalDistance(rect, group.rect)
+                let heightScale = max(rect.height, group.rect.height, 0.001)
+                let proximity = max(0, 1 - verticalGap / (heightScale * 2.5))
+                let score = xOverlap * 2 + proximity - angleDelta * 0.5
+
+                if score > bestScore {
+                    bestScore = score
+                    bestGroup = groupIndex
+                }
+            }
+
+            if let groupIndex = bestGroup {
+                groups[groupIndex].indices.append(index)
+                groups[groupIndex].rect = groups[groupIndex].rect.union(rect)
+                let count = Double(groups[groupIndex].indices.count)
+                groups[groupIndex].angle = (groups[groupIndex].angle * (count - 1) + angle) / count
+            } else {
+                groups.append(Group(indices: [index], rect: rect, angle: angle))
+            }
+        }
+
+        // Vision обычно возвращает строки сверху вниз. Сортируем группы по
+        // положению, чтобы итоговый copied text оставался в естественном порядке.
+        groups.sort { a, b in
+            if abs(a.rect.midY - b.rect.midY) > 0.02 {
+                return a.rect.midY > b.rect.midY
+            }
+            return a.rect.minX < b.rect.minX
+        }
+
+        return groups.compactMap { group in
+            let text = group.indices
+                .sorted { lhs, rhs in
+                    let a = normalizedRect(for: blocks[lhs])
+                    let b = normalizedRect(for: blocks[rhs])
+                    if abs(a.midY - b.midY) > 0.01 { return a.midY > b.midY }
+                    return a.minX < b.minX
+                }
+                .map { translated[$0].trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+
+            guard !text.isEmpty else { return nil }
+            return DisplayField(text: text, normalizedRect: group.rect, angle: group.angle)
+        }
+    }
+
+    private func normalizedRect(for block: RecognizedTextBlock) -> CGRect {
+        let points = [block.topLeft, block.topRight, block.bottomLeft, block.bottomRight]
+        let minX = points.map(\.x).min() ?? block.boundingBox.minX
+        let maxX = points.map(\.x).max() ?? block.boundingBox.maxX
+        let minY = points.map(\.y).min() ?? block.boundingBox.minY
+        let maxY = points.map(\.y).max() ?? block.boundingBox.maxY
+        return CGRect(x: minX, y: minY,
+                      width: max(0.001, maxX - minX),
+                      height: max(0.001, maxY - minY))
+    }
+
+    private func textAngle(for block: RecognizedTextBlock) -> Double {
+        atan2(-(block.topRight.y - block.topLeft.y),
+              block.topRight.x - block.topLeft.x)
+    }
+
+    private func normalizedAngle(_ angle: Double) -> Double {
+        var value = angle
+        while value > .pi { value -= 2 * .pi }
+        while value < -.pi { value += 2 * .pi }
+        return value
+    }
+
+    private func horizontalOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let overlap = max(0, min(a.maxX, b.maxX) - max(a.minX, b.minX))
+        return overlap / max(0.001, min(a.width, b.width))
+    }
+
+    private func verticalDistance(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        if a.intersects(b) { return 0 }
+        if a.maxY < b.minY { return b.minY - a.maxY }
+        return a.minY - b.maxY
+    }
+
+    private struct TextGroup {
+        let indices: [Int]
+    }
+
+    private func makeTextGroups(_ blocks: [RecognizedTextBlock]) -> [TextGroup] {
+        struct WorkingGroup {
+            var indices: [Int]
+            var rect: CGRect
+            var angle: Double
+        }
+
+        var groups: [WorkingGroup] = []
+        for index in blocks.indices {
+            let block = blocks[index]
+            let rect = normalizedRect(for: block)
+            let angle = textAngle(for: block)
+            var best: Int?
+            var bestScore = -Double.infinity
+
+            for groupIndex in groups.indices {
+                let group = groups[groupIndex]
+                guard abs(normalizedAngle(angle - group.angle)) < .pi / 12 else { continue }
+                let overlap = horizontalOverlap(rect, group.rect)
+                let verticalGap = verticalDistance(rect, group.rect)
+                let scale = max(rect.height, group.rect.height, 0.001)
+                let close = verticalGap <= scale * 1.25 || overlap > 0.55
+                guard close else { continue }
+                let proximity = max(0, 1 - verticalGap / (scale * 2.5))
+                let score = overlap * 2 + proximity
+                if score > bestScore {
+                    bestScore = score
+                    best = groupIndex
+                }
+            }
+
+            if let best {
+                groups[best].indices.append(index)
+                groups[best].rect = groups[best].rect.union(rect)
+                let count = Double(groups[best].indices.count)
+                groups[best].angle = (groups[best].angle * (count - 1) + angle) / count
+            } else {
+                groups.append(WorkingGroup(indices: [index], rect: rect, angle: angle))
+            }
+        }
+
+        groups.sort { a, b in
+            if abs(a.rect.midY - b.rect.midY) > 0.02 { return a.rect.midY > b.rect.midY }
+            return a.rect.minX < b.rect.minX
+        }
+        return groups.map { TextGroup(indices: $0.indices) }
+    }
+
+    private func makeDisplayFields(
+        from blocks: [RecognizedTextBlock],
+        groups: [TextGroup],
+        translations: [String]
+    ) -> [DisplayField] {
+        zip(groups, translations).compactMap { group, translation in
+            let clean = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return nil }
+            let rect = group.indices
+                .map { normalizedRect(for: blocks[$0]) }
+                .reduce(CGRect.null) { $0.union($1) }
+            let angle = group.indices
+                .map { textAngle(for: blocks[$0]) }
+                .reduce(0, +) / Double(max(1, group.indices.count))
+            return DisplayField(text: clean, normalizedRect: rect, angle: angle)
+        }
+    }
+
+    private func translatedField(_ field: DisplayField, in displayRect: CGRect) -> some View {
+        let rect = CGRect(
+            x: displayRect.minX + field.normalizedRect.minX * displayRect.width,
+            y: displayRect.minY + (1 - field.normalizedRect.maxY) * displayRect.height,
+            width: field.normalizedRect.width * displayRect.width,
+            height: field.normalizedRect.height * displayRect.height
         )
 
-        let lines = max(1, translatedText.components(separatedBy: "\n").count)
-        return DisplayField(rect: field, angle: 0, lineCount: lines)
-    }
-
-    private func translatedField(_ field: DisplayField) -> some View {
-        // Поле получает размер всей области исходного текста. Если перевод длиннее
-        // оригинала, шрифт автоматически уменьшается до размера, при котором весь
-        // текст помещается внутрь поля — без обрезания и выхода за его границы.
-        let lineHeight = max(18, field.rect.height / CGFloat(field.lineCount))
-        let baseFontSize = max(13, min(22, lineHeight * 0.72))
-        let horizontalInset = max(8, min(16, field.rect.width * 0.025))
-        let verticalInset = max(7, min(14, lineHeight * 0.18))
-        let availableWidth = max(1, field.rect.width - horizontalInset * 2)
-        let availableHeight = max(1, field.rect.height - verticalInset * 2)
+        // У каждого блока свой фон. Если перевод длиннее исходной надписи,
+        // шрифт уменьшается, но само поле остаётся на месте оригинального текста.
+        let lineCount = max(1, field.text.components(separatedBy: "\n").count)
+        let lineHeight = max(12, rect.height / CGFloat(lineCount))
+        let baseFontSize = max(8, min(22, lineHeight * 0.78))
+        let horizontalInset = max(4, min(12, rect.width * 0.025))
+        let verticalInset = max(3, min(10, lineHeight * 0.18))
+        let availableWidth = max(1, rect.width - horizontalInset * 2)
+        let availableHeight = max(1, rect.height - verticalInset * 2)
         let fontSize = fittingFontSize(
-            for: translatedText,
+            for: field.text,
             maxWidth: availableWidth,
             maxHeight: availableHeight,
             preferred: baseFontSize
         )
 
-        return Text(translatedText)
+        return Text(field.text)
             .font(.system(size: fontSize, weight: .semibold))
             .foregroundStyle(Color(red: 0.12, green: 0.15, blue: 0.13))
             .multilineTextAlignment(.leading)
@@ -174,9 +355,9 @@ struct PhotoResultView: View {
                 Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.92),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
-            .frame(width: max(1, field.rect.width), height: max(1, field.rect.height))
+            .frame(width: max(1, rect.width), height: max(1, rect.height))
             .rotationEffect(.radians(field.angle))
-            .position(x: field.rect.midX, y: field.rect.midY)
+            .position(x: rect.midX, y: rect.midY)
     }
 
     private func fittingFontSize(
@@ -279,33 +460,60 @@ struct PhotoResultView: View {
 
             let recognized = try await TextRecognitionService.recognizeText(in: image)
 
-            // Собираем весь распознанный текст в один документ. Перевод выполняется
-            // одним вызовом, поэтому модель получает структуру абзаца/строк, а на
-            // экране мы можем отрисовать всё одним сплошным полем.
-            let sourceText = recognized
-                .map(\.text)
-                .joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard !sourceText.isEmpty else {
+            guard recognized.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
                 throw TextRecognitionError.noTextFound
             }
 
-            let translated = try await vm.translateStandalone(
-                sourceText,
-                from: vm.sourceLanguage,
-                to: vm.targetLanguage
-            )
+            // Сначала группируем строки по расположению на фотографии. Поэтому
+            // несколько строк одного сплошного блока получают одно поле, а
+            // разнесённые надписи (например, кнопки пульта) остаются отдельными.
+            let sourceBlocks = recognized.filter {
+                !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            guard !sourceBlocks.isEmpty else {
+                throw TextRecognitionError.noTextFound
+            }
 
-            // Объединяем bounding box всех найденных строк в одну область.
-            let union = recognized
-                .map(\.boundingBox)
-                .dropFirst()
-                .reduce(recognized[0].boundingBox) { $0.union($1) }
+            struct TranslationGroup {
+                let indices: [Int]
+                let text: String
+            }
+
+            // Используем ту же геометрическую группировку, что и для отображения,
+            // но получаем индексы через временный перевод-заглушку. Это позволяет
+            // не менять распознавание и оставить перевод каждого логического блока
+            // одним запросом к модели.
+            let groups = makeTextGroups(sourceBlocks)
+            var groupTranslations: [String] = []
+
+            for group in groups {
+                let source = group.indices
+                    .map { sourceBlocks[$0].text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+
+                let translated = try await vm.translateStandalone(
+                    source,
+                    from: vm.sourceLanguage,
+                    to: vm.targetLanguage
+                )
+                groupTranslations.append(translated.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+
+            let fields = makeDisplayFields(
+                from: sourceBlocks,
+                groups: groups,
+                translations: groupTranslations
+            )
+            let allTranslations = groupTranslations.filter { !$0.isEmpty }
+
+            guard !fields.isEmpty else {
+                throw TextRecognitionError.noTextFound
+            }
 
             withAnimation(.easeOut(duration: 0.2)) {
-                textRect = union
-                translatedText = translated.trimmingCharacters(in: .whitespacesAndNewlines)
+                displayFields = fields
+                translatedText = allTranslations.joined(separator: "\n")
             }
         } catch {
             if translatedText.isEmpty {
