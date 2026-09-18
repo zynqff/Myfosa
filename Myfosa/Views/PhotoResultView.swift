@@ -14,6 +14,7 @@ struct PhotoResultView: View {
     @State private var errorMessage: String?
     @State private var translatedText = ""
     @State private var displayFields: [DisplayField] = []
+    @State private var progressiveTranslations: [String] = []
     @State private var zoomScale: CGFloat = 1
     @State private var contentOffset: CGSize = .zero
     @State private var gestureStartScale: CGFloat = 1
@@ -364,16 +365,12 @@ struct PhotoResultView: View {
                 .map { textAngle(for: blocks[$0]) }
                 .reduce(0, +) / Double(group.indices.count)
 
-            // Строим рамку в системе координат, повернутой вместе с текстом.
-            // Если сначала взять обычный axis-aligned bounding box, а потом
-            // повернуть его, наклонные надписи превращаются в большие ромбы.
-            // Здесь ширина/высота вычисляются вдоль реального направления текста.
-            let cosA = cos(angle)
-            let sinA = sin(angle)
-            let ux = CGFloat(cosA)
-            let uy = CGFloat(sinA)
-            let vx = CGFloat(-sinA)
-            let vy = CGFloat(cosA)
+            // Проецируем углы исходного текста на оси самого текста. Благодаря
+            // этому поле остаётся прямоугольным и повторяет наклон оригинала.
+            let ux = CGFloat(cos(angle))
+            let uy = CGFloat(sin(angle))
+            let vx = CGFloat(-sin(angle))
+            let vy = CGFloat(cos(angle))
 
             let points = group.indices.flatMap { index -> [CGPoint] in
                 let block = blocks[index]
@@ -392,23 +389,13 @@ struct PhotoResultView: View {
             let minV = projectedV.min() ?? 0
             let maxV = projectedV.max() ?? 1
 
-            // Небольшой запас только внутри самого поля — он нужен для текста,
-            // но не должен заметно раздувать поле поверх соседних надписей.
-            let width = max(0.001, maxU - minU)
-            let height = max(0.001, maxV - minV)
-            let centerU = (minU + maxU) * 0.5
-            let centerV = (minV + maxV) * 0.5
-            let centerX = centerU * ux + centerV * vx
-            let centerY = centerU * uy + centerV * vy
-
             let rect = CGRect(
-                x: centerX - width * 0.5,
-                y: centerY - height * 0.5,
-                width: width,
-                height: height
+                x: minU * ux + minV * vx,
+                y: minU * uy + minV * vy,
+                width: max(0.001, maxU - minU),
+                height: max(0.001, maxV - minV)
             )
 
-            // translatedField ожидает Vision-координаты (Y снизу вверх).
             let visionRect = CGRect(
                 x: rect.minX,
                 y: 1 - rect.maxY,
@@ -421,52 +408,75 @@ struct PhotoResultView: View {
     }
 
     private func translatedField(_ field: DisplayField, in displayRect: CGRect) -> some View {
-        let rect = CGRect(
+        let originalRect = CGRect(
             x: displayRect.minX + field.normalizedRect.minX * displayRect.width,
             y: displayRect.minY + (1 - field.normalizedRect.maxY) * displayRect.height,
             width: field.normalizedRect.width * displayRect.width,
             height: field.normalizedRect.height * displayRect.height
         )
 
-        // У каждого блока свой фон. Если перевод длиннее исходной надписи,
-        // шрифт уменьшается, но само поле остаётся на месте оригинального текста.
         let lineCount = max(1, field.text.components(separatedBy: "\n").count)
-        let lineHeight = max(12, rect.height / CGFloat(lineCount))
-        let baseFontSize = max(8, min(22, lineHeight * 0.78))
-        let horizontalInset = max(4, min(12, rect.width * 0.025))
-        let verticalInset = max(3, min(10, lineHeight * 0.18))
-        let availableWidth = max(1, rect.width - horizontalInset * 2)
-        let availableHeight = max(1, rect.height - verticalInset * 2)
+        let originalLineHeight = max(12, originalRect.height / CGFloat(lineCount))
+        let preferredFont = max(10, min(26, originalLineHeight * 0.78))
+        let horizontalInset = max(5, min(14, originalLineHeight * 0.22))
+        let verticalInset = max(3, min(9, originalLineHeight * 0.14))
+
+        // Сначала пытаемся сохранить читаемый размер шрифта и немного расширить
+        // само поле. Только если даже расширенного поля недостаточно — уменьшаем
+        // шрифт. Поэтому перевод больше не превращается в крошечный текст.
+        let measuredAtPreferred = measuredTextSize(
+            field.text,
+            fontSize: preferredFont,
+            maxWidth: max(1, originalRect.width * 2.0)
+        )
+        let desiredWidth = measuredAtPreferred.width + horizontalInset * 2
+        let desiredHeight = measuredAtPreferred.height + verticalInset * 2
+        let expandedWidth = max(originalRect.width, min(originalRect.width * 2.2, desiredWidth))
+        let expandedHeight = max(originalRect.height, min(originalRect.height * 2.0, desiredHeight))
+
+        let fieldRect = CGRect(
+            x: originalRect.midX - expandedWidth * 0.5,
+            y: originalRect.midY - expandedHeight * 0.5,
+            width: expandedWidth,
+            height: expandedHeight
+        )
+        let availableWidth = max(1, fieldRect.width - horizontalInset * 2)
+        let availableHeight = max(1, fieldRect.height - verticalInset * 2)
         let fontSize = fittingFontSize(
             for: field.text,
             maxWidth: availableWidth,
             maxHeight: availableHeight,
-            preferred: baseFontSize
+            preferred: preferredFont
         )
 
         return Text(field.text)
             .font(.system(size: fontSize, weight: .semibold))
             .foregroundStyle(Color(red: 0.12, green: 0.15, blue: 0.13))
             .multilineTextAlignment(.leading)
-            .lineSpacing(max(1, lineHeight * 0.10))
+            .lineSpacing(max(1, fontSize * 0.10))
             .allowsTightening(true)
-            .minimumScaleFactor(0.35)
-            .frame(
-                width: availableWidth,
-                height: availableHeight,
-                alignment: .leading
-            )
+            .minimumScaleFactor(0.85)
+            .lineLimit(nil)
+            .frame(width: availableWidth, height: availableHeight, alignment: .leading)
             .padding(.horizontal, horizontalInset)
             .padding(.vertical, verticalInset)
-            // Полупрозрачный тёплый белый: перевод остаётся читаемым,
-            // а изображение под ним мягко просвечивает.
             .background(
                 Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.92),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
-            .frame(width: max(1, rect.width), height: max(1, rect.height))
+            .frame(width: fieldRect.width, height: fieldRect.height)
             .rotationEffect(.radians(field.angle))
-            .position(x: rect.midX, y: rect.midY)
+            .position(x: fieldRect.midX, y: fieldRect.midY)
+    }
+
+    private func measuredTextSize(_ text: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGSize {
+        let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+        return (text as NSString).boundingRect(
+            with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        ).size
     }
 
     private func fittingFontSize(
@@ -475,20 +485,15 @@ struct PhotoResultView: View {
         maxHeight: CGFloat,
         preferred: CGFloat
     ) -> CGFloat {
-        let minimum: CGFloat = 7
+        let minimum: CGFloat = 9
         guard maxWidth > 1, maxHeight > 1, !text.isEmpty else { return minimum }
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: preferred, weight: .semibold)
-        ]
-
         func fits(_ size: CGFloat) -> Bool {
-            var attrs = attributes
-            attrs[.font] = UIFont.systemFont(ofSize: size, weight: .semibold)
+            let font = UIFont.systemFont(ofSize: size, weight: .semibold)
             let rect = (text as NSString).boundingRect(
                 with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: attrs,
+                attributes: [.font: font],
                 context: nil
             )
             return rect.height <= maxHeight + 1
@@ -499,13 +504,9 @@ struct PhotoResultView: View {
 
         var low = minimum
         var high = preferred
-        for _ in 0..<10 {
+        for _ in 0..<12 {
             let mid = (low + high) / 2
-            if fits(mid) {
-                low = mid
-            } else {
-                high = mid
-            }
+            if fits(mid) { low = mid } else { high = mid }
         }
         return low
     }
@@ -568,62 +569,60 @@ struct PhotoResultView: View {
             }
 
             let recognized = try await TextRecognitionService.recognizeText(in: image)
-
-            guard recognized.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
-                throw TextRecognitionError.noTextFound
-            }
-
-            // Сначала группируем строки по расположению на фотографии. Поэтому
-            // несколько строк одного сплошного блока получают одно поле, а
-            // разнесённые надписи (например, кнопки пульта) остаются отдельными.
             let sourceBlocks = recognized.filter {
                 !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
-            guard !sourceBlocks.isEmpty else {
-                throw TextRecognitionError.noTextFound
-            }
+            guard !sourceBlocks.isEmpty else { throw TextRecognitionError.noTextFound }
 
-            struct TranslationGroup {
-                let indices: [Int]
-                let text: String
-            }
-
-            // Используем ту же геометрическую группировку, что и для отображения,
-            // но получаем индексы через временный перевод-заглушку. Это позволяет
-            // не менять распознавание и оставить перевод каждого логического блока
-            // одним запросом к модели.
             let groups = makeTextGroups(sourceBlocks)
-            var groupTranslations: [String] = []
+            progressiveTranslations = Array(repeating: "", count: groups.count)
+            displayFields = []
+            translatedText = ""
 
-            for group in groups {
+            // Каждый логический блок переводится отдельно. Токены сразу попадают
+            // на экран: как только пришёл первый фрагмент первого перевода,
+            // индикатор «Распознаём и переводим…» автоматически исчезает.
+            for (groupIndex, group) in groups.enumerated() {
                 let source = group.indices
                     .map { sourceBlocks[$0].text.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n")
 
-                let translated = try await vm.translateStandalone(
+                let finalTranslation = try await vm.translateStandalone(
                     source,
                     from: vm.sourceLanguage,
-                    to: vm.targetLanguage
+                    to: vm.targetLanguage,
+                    onToken: { piece in
+                        guard !piece.isEmpty else { return }
+                        Task { @MainActor in
+                            progressiveTranslations[groupIndex] += piece
+                            displayFields = makeDisplayFields(
+                                from: sourceBlocks,
+                                groups: groups,
+                                translations: progressiveTranslations
+                            )
+                            translatedText = progressiveTranslations
+                                .joined(separator: "\n")
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                        }
+                    }
                 )
-                groupTranslations.append(translated.trimmingCharacters(in: .whitespacesAndNewlines))
+
+                progressiveTranslations[groupIndex] = finalTranslation
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                displayFields = makeDisplayFields(
+                    from: sourceBlocks,
+                    groups: groups,
+                    translations: progressiveTranslations
+                )
+                translatedText = progressiveTranslations
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
-            let fields = makeDisplayFields(
-                from: sourceBlocks,
-                groups: groups,
-                translations: groupTranslations
-            )
-            let allTranslations = groupTranslations.filter { !$0.isEmpty }
-
-            guard !fields.isEmpty else {
-                throw TextRecognitionError.noTextFound
-            }
-
-            withAnimation(.easeOut(duration: 0.2)) {
-                displayFields = fields
-                translatedText = allTranslations.joined(separator: "\n")
-            }
+            guard !displayFields.isEmpty else { throw TextRecognitionError.noTextFound }
+        } catch is CancellationError {
+            // Нормальная отмена задачи не является ошибкой интерфейса.
         } catch {
             if translatedText.isEmpty {
                 errorMessage = error.localizedDescription
@@ -631,4 +630,5 @@ struct PhotoResultView: View {
         }
         isProcessing = false
     }
+
 }
