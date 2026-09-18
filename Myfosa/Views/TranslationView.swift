@@ -18,6 +18,8 @@ struct TranslationView: View {
                 } else if vm.config != nil && !vm.isModelInstalled {
                     DownloadPromptView()
                 } else {
+                    translateCard
+
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 12) {
@@ -43,8 +45,6 @@ struct TranslationView: View {
                             withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                         }
                     }
-
-                    translateCard
                 }
             }
             .navigationTitle("Перевод")
@@ -107,27 +107,15 @@ struct TranslationView: View {
     private var translateCard: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Picker("", selection: $vm.sourceLanguage) {
-                        ForEach(supportedLanguages, id: \.self) { lang in
-                            Text(languageAutonym(lang)).tag(lang)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .font(.subheadline.weight(.semibold))
-                    .labelsHidden()
-
-                    Spacer()
-
-                    if !vm.sourceText.isEmpty {
-                        Button {
-                            vm.clearInput()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
+                Picker("", selection: $vm.sourceLanguage) {
+                    ForEach(supportedLanguages, id: \.self) { lang in
+                        Text(languageAutonym(lang)).tag(lang)
                     }
                 }
+                .pickerStyle(.menu)
+                .font(.subheadline.weight(.semibold))
+                .labelsHidden()
+                .onChange(of: vm.sourceLanguage) { _ in vm.schedulePreview() }
 
                 HStack(alignment: .top, spacing: 8) {
                     TextField(
@@ -142,8 +130,21 @@ struct TranslationView: View {
                     }
                     .onSubmit { finalizeOrDismiss() }
 
-                    micButton(highlighted: vm.speechRecognizer.isListening) {
-                        micTapped(bottom: false)
+                    // Пока поле пустое — микрофон для голосового ввода. Как
+                    // только пользователь начал печатать — на его месте
+                    // крестик для быстрой очистки (только у верхнего поля;
+                    // у нижнего такого переключения нет).
+                    if vm.sourceText.isEmpty {
+                        micButton(highlighted: vm.speechRecognizer.isListening) {
+                            micTapped(bottom: false)
+                        }
+                    } else {
+                        Button {
+                            vm.clearInput()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -163,16 +164,27 @@ struct TranslationView: View {
             .padding(.horizontal, 16)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(languageAutonym(vm.targetLanguage))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(MyfosaTheme.brandStart)
+                // Язык нижнего поля теперь тоже выбирается напрямую (а не
+                // только через обмен местами с верхним) — тап по самому
+                // пикеру меняет только его, не трогая остальную карточку.
+                Picker("", selection: $vm.targetLanguage) {
+                    ForEach(supportedLanguages, id: \.self) { lang in
+                        Text(languageAutonym(lang)).tag(lang)
+                    }
+                }
+                .pickerStyle(.menu)
+                .font(.subheadline.weight(.semibold))
+                .labelsHidden()
+                .tint(MyfosaTheme.brandStart)
+                .onChange(of: vm.targetLanguage) { _ in vm.schedulePreview() }
 
                 HStack(alignment: .top, spacing: 8) {
                     Text(vm.preview.isEmpty ? enterTextPlaceholder(for: vm.targetLanguage) : vm.preview)
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(vm.preview.isEmpty ? Color.secondary : MyfosaTheme.brandStart)
-
-                    Spacer(minLength: 0)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectBottomField() }
 
                     micButton(highlighted: false) {
                         micTapped(bottom: true)
@@ -181,8 +193,6 @@ struct TranslationView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
-            .contentShape(Rectangle())
-            .onTapGesture { selectBottomField() }
 
             if !vm.preview.isEmpty {
                 Divider().padding(.horizontal, 16)

@@ -50,7 +50,14 @@ struct TranslationCardView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        // Пока карточка не сдвинута свайпом — обычный полупрозрачный фон.
+        // Как только за ней открыта (зафиксирована) мусорка — фон должен
+        // быть непрозрачным, иначе красный "trash" просвечивает через
+        // .thinMaterial и карточка выглядит грязно-розовой.
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(revealStage == .closed ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(Color(.systemBackground)))
+        )
     }
 
     private func languageRow(text: String, language: String, id: String, isTarget: Bool) -> some View {
@@ -124,6 +131,11 @@ struct TranslationCardView: View {
                         revealStage = .full
                         withAnimation(.easeOut(duration: 0.2)) { dragOffset = -fullWidth }
                         onDelete?()
+                    } else if dragOffset > -compactWidth / 2 {
+                        // Уже открытая (зафиксированная) мусорка: свайп
+                        // вправо обратно к началу — закрываем карточку
+                        // полностью, а не снова "прилипаем" к компактному виду.
+                        collapse()
                     } else {
                         withAnimation(.spring(response: 0.3)) { dragOffset = -compactWidth }
                     }
