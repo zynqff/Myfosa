@@ -88,7 +88,19 @@ final class TranslatorViewModel: ObservableObject {
 
         Task {
             let started = DispatchTime.now()
-            await refreshConfig()
+            // Наличие модели на диске — чисто локальная проверка (файл + id/версия
+            // из конфига). Если конфиг уже был закеширован раньше — используем его
+            // сразу, без сети, чтобы экран открылся мгновенно. Актуальный конфиг с
+            // сервера подтягиваем следом, уже в фоне, не блокируя интерфейс.
+            if let cached = await configService.loadCached() {
+                config = cached
+                modelURL = await modelStore.localURL(fileName: cached.model.fileName)
+                await syncState()
+            } else {
+                // Первый запуск, локального конфига ещё нет — тут без сети,
+                // к сожалению, никак не узнать даже то, какую модель качать.
+                await refreshConfig()
+            }
             // Не даём интерфейсу "мигнуть" неправильным состоянием, пока идёт
             // проверка наличия модели: держим экран пустым минимум ~60мс, даже
             // если проверка завершилась быстрее. Если же сама проверка заняла
@@ -96,6 +108,25 @@ final class TranslatorViewModel: ObservableObject {
             let elapsedMs = (DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
             if elapsedMs < 60 { try? await Task.sleep(for: .milliseconds(60 - Int(elapsedMs))) }
             isReady = true
+
+            if config != nil {
+                // Экран уже открыт по кешу — здесь просто молча подтягиваем
+                // актуальную версию конфига с сервера. Ошибку сети тут не
+                // показываем: офлайн-запуск по кешу — нормальный сценарий,
+                // а не повод пугать пользователя алертом.
+                await refreshConfigSilently()
+            }
+        }
+    }
+
+    /// Как `refreshConfig()`, но не выставляет `errorMessage` при сбое сети —
+    /// используется для тихого фонового обновления конфига после того, как
+    /// экран уже открылся по локальному кешу.
+    private func refreshConfigSilently() async {
+        if let c = try? await configService.load() {
+            config = c
+            modelURL = await modelStore.localURL(fileName: c.model.fileName)
+            await syncState()
         }
     }
 
@@ -200,8 +231,9 @@ final class TranslatorViewModel: ObservableObject {
         let item = TranslationItem(source: source, translated: translated, sourceLang: sourceLanguage, targetLang: targetLanguage, date: .now)
         // Пишем только в текущую (видимую на экране «Текст») сессию. В постоянный
         // архив («История») она уйдёт целиком при уходе приложения в фон —
-        // см. appDidEnterBackground().
-        history.append(item)
+        // см. appDidEnterBackground(). Вставляем в начало: карточка появляется
+        // сразу под композером (он теперь сверху), а не в конце длинной ленты.
+        history.insert(item, at: 0)
         previewTask?.cancel()
         previewGeneration += 1
         sourceText = ""

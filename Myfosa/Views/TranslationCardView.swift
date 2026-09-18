@@ -50,14 +50,10 @@ struct TranslationCardView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Пока карточка не сдвинута свайпом — обычный полупрозрачный фон.
-        // Как только за ней открыта (зафиксирована) мусорка — фон должен
-        // быть непрозрачным, иначе красный "trash" просвечивает через
-        // .thinMaterial и карточка выглядит грязно-розовой.
-        .background(
-            RoundedRectangle(cornerRadius: 20)
-                .fill(revealStage == .closed ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(Color(.systemBackground)))
-        )
+        // Непрозрачный фон всегда — не только когда за карточкой открыта
+        // мусорка. .thinMaterial просвечивает, и когда пропущена лента
+        // истории (или что-то ещё) за карточкой, это выглядит грязно.
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 20))
     }
 
     private func languageRow(text: String, language: String, id: String, isTarget: Bool) -> some View {

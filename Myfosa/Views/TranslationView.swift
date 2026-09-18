@@ -23,6 +23,7 @@ struct TranslationView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 12) {
+                                Color.clear.frame(height: 1).id("top")
                                 if vm.history.isEmpty {
                                     emptyState
                                 }
@@ -30,9 +31,11 @@ struct TranslationView: View {
                                     TranslationCardView(item: item, onDelete: {
                                         vm.deleteFromSession(item)
                                     })
+                                    .transition(.move(edge: .top).combined(with: .opacity))
                                 }
-                                Color.clear.frame(height: 1).id("bottom")
-                            }.padding()
+                            }
+                            .padding()
+                            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: vm.history.count)
                         }
                         // Прокрутка истории вверх скрывает клавиатуру; чтобы показать
                         // её снова — нужно нажать на поле ввода. Тот же жест сворачивает
@@ -42,7 +45,10 @@ struct TranslationView: View {
                             NotificationCenter.default.post(name: .collapseCardSwipe, object: nil)
                         })
                         .onChange(of: vm.history.count) { _ in
-                            withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                            // Новые переводы вставляются в начало списка (сразу под
+                            // композером) — подскролливаем наверх, если пользователь
+                            // до этого успел уйти вглубь старой истории.
+                            withAnimation { proxy.scrollTo("top", anchor: .top) }
                         }
                     }
                 }
@@ -186,8 +192,12 @@ struct TranslationView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { selectBottomField() }
 
-                    micButton(highlighted: false) {
-                        micTapped(bottom: true)
+                    // Как только начали печатать сверху — микрофону снизу
+                    // тоже нечего делать: место просто остаётся пустым.
+                    if vm.sourceText.isEmpty {
+                        micButton(highlighted: false) {
+                            micTapped(bottom: true)
+                        }
                     }
                 }
             }
@@ -251,7 +261,9 @@ struct TranslationView: View {
             return
         }
         if bottom { vm.swapLanguages() }
-        focused = true
+        // При старте диктовки прячем клавиатуру — во время разговора она
+        // только загораживает экран, а поле и так обновляется вживую.
+        focused = false
         vm.startDictation()
     }
 
