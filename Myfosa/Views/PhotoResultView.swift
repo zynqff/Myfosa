@@ -389,18 +389,25 @@ struct PhotoResultView: View {
             let minV = projectedV.min() ?? 0
             let maxV = projectedV.max() ?? 1
 
-            let rect = CGRect(
-                x: minU * ux + minV * vx,
-                y: minU * uy + minV * vy,
-                width: max(0.001, maxU - minU),
-                height: max(0.001, maxV - minV)
-            )
+            // minU/maxU и minV/maxV — размеры в собственной системе координат
+            // текста. Раньше здесь они ошибочно записывались как обычный CGRect: у
+            // наклонного текста width/height не совпадают с осями изображения. Из-за
+            // этого поле могло смещаться в сторону и становиться большим ромбом.
+            let localWidth = max(0.001, maxU - minU)
+            let localHeight = max(0.001, maxV - minV)
+            let centerU = (minU + maxU) * 0.5
+            let centerV = (minV + maxV) * 0.5
+            let centerX = centerU * ux + centerV * vx
+            let centerY = centerU * uy + centerV * vy
 
+            // normalizedRect хранит центр/размеры в координатах Vision, а угол
+            // отдельно задаёт поворот. Это позволяет translatedField корректно
+            // позиционировать именно центр исходной надписи.
             let visionRect = CGRect(
-                x: rect.minX,
-                y: 1 - rect.maxY,
-                width: rect.width,
-                height: rect.height
+                x: centerX - localWidth * 0.5,
+                y: 1 - centerY - localHeight * 0.5,
+                width: localWidth,
+                height: localHeight
             )
 
             return DisplayField(text: clean, normalizedRect: visionRect, angle: angle)
@@ -415,33 +422,27 @@ struct PhotoResultView: View {
             height: field.normalizedRect.height * displayRect.height
         )
 
-        let lineCount = max(1, field.text.components(separatedBy: "\n").count)
-        let originalLineHeight = max(12, originalRect.height / CGFloat(lineCount))
-        let preferredFont = max(10, min(26, originalLineHeight * 0.78))
-        let horizontalInset = max(5, min(14, originalLineHeight * 0.22))
-        let verticalInset = max(3, min(9, originalLineHeight * 0.14))
+        // Поле остаётся привязанным к исходной области. Не раздуваем его в 2–3
+        // раза: именно это раньше приводило к перекрытиям и к появлению перевода
+        // рядом с оригинальной надписью. Разрешаем лишь небольшой запас для
+        // длинного перевода, а недостающий объём компенсируем переносами и
+        // уменьшением шрифта.
+        let horizontalInset = max(4, min(10, originalRect.height * 0.20))
+        let verticalInset = max(3, min(7, originalRect.height * 0.12))
+        let preferredFont = max(12, min(22, originalRect.height * 0.72))
 
-        // Сначала пытаемся сохранить читаемый размер шрифта и немного расширить
-        // само поле. Только если даже расширенного поля недостаточно — уменьшаем
-        // шрифт. Поэтому перевод больше не превращается в крошечный текст.
-        let measuredAtPreferred = measuredTextSize(
+        let natural = measuredTextSize(
             field.text,
             fontSize: preferredFont,
-            maxWidth: max(1, originalRect.width * 2.0)
+            maxWidth: max(1, originalRect.width * 1.35)
         )
-        let desiredWidth = measuredAtPreferred.width + horizontalInset * 2
-        let desiredHeight = measuredAtPreferred.height + verticalInset * 2
-        let expandedWidth = max(originalRect.width, min(originalRect.width * 2.2, desiredWidth))
-        let expandedHeight = max(originalRect.height, min(originalRect.height * 2.0, desiredHeight))
+        let maxFieldWidth = max(originalRect.width, originalRect.width * 1.35)
+        let maxFieldHeight = max(originalRect.height, originalRect.height * 1.55)
+        let fieldWidth = min(maxFieldWidth, max(originalRect.width, natural.width + horizontalInset * 2))
+        let fieldHeight = min(maxFieldHeight, max(originalRect.height, natural.height + verticalInset * 2))
 
-        let fieldRect = CGRect(
-            x: originalRect.midX - expandedWidth * 0.5,
-            y: originalRect.midY - expandedHeight * 0.5,
-            width: expandedWidth,
-            height: expandedHeight
-        )
-        let availableWidth = max(1, fieldRect.width - horizontalInset * 2)
-        let availableHeight = max(1, fieldRect.height - verticalInset * 2)
+        let availableWidth = max(1, fieldWidth - horizontalInset * 2)
+        let availableHeight = max(1, fieldHeight - verticalInset * 2)
         let fontSize = fittingFontSize(
             for: field.text,
             maxWidth: availableWidth,
@@ -449,14 +450,18 @@ struct PhotoResultView: View {
             preferred: preferredFont
         )
 
+        // Если текст всё ещё не помещается на выбранном размере, сначала даём ему
+        // больше высоты за счёт переносов, но никогда не используем truncation.
+        let finalFontSize = max(10.5, fontSize)
+
         return Text(field.text)
-            .font(.system(size: fontSize, weight: .semibold))
+            .font(.system(size: finalFontSize, weight: .semibold))
             .foregroundStyle(Color(red: 0.12, green: 0.15, blue: 0.13))
             .multilineTextAlignment(.leading)
-            .lineSpacing(max(1, fontSize * 0.10))
+            .lineSpacing(max(1, finalFontSize * 0.08))
             .allowsTightening(true)
-            .minimumScaleFactor(0.85)
             .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(width: availableWidth, height: availableHeight, alignment: .leading)
             .padding(.horizontal, horizontalInset)
             .padding(.vertical, verticalInset)
@@ -464,9 +469,9 @@ struct PhotoResultView: View {
                 Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.92),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
-            .frame(width: fieldRect.width, height: fieldRect.height)
+            .frame(width: fieldWidth, height: fieldHeight)
             .rotationEffect(.radians(field.angle))
-            .position(x: fieldRect.midX, y: fieldRect.midY)
+            .position(x: originalRect.midX, y: originalRect.midY)
     }
 
     private func measuredTextSize(_ text: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGSize {
