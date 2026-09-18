@@ -246,43 +246,101 @@ struct PhotoResultView: View {
     }
 
     private func makeTextGroups(_ blocks: [RecognizedTextBlock]) -> [TextGroup] {
+        // Vision отдаёт отдельные наблюдения для строк. Важно не сравнивать новую
+        // строку с уже объединённым большим прямоугольником: это приводит к
+        // "цепному" объединению нескольких независимых надписей в одно поле.
+        // Сравниваем только с ближайшими строками, уже входящими в группу.
         struct WorkingGroup {
             var indices: [Int]
             var rect: CGRect
             var angle: Double
         }
 
+        func lineCompatible(_ a: Int, _ b: Int) -> (Bool, Double) {
+            let ra = normalizedRect(for: blocks[a])
+            let rb = normalizedRect(for: blocks[b])
+            let aa = textAngle(for: blocks[a])
+            let ab = textAngle(for: blocks[b])
+
+            let angleDelta = abs(normalizedAngle(aa - ab))
+            guard angleDelta <= .pi / 18 else { return (false, -.greatestFiniteMagnitude) } // 10°
+
+            let height = max(0.001, min(ra.height, rb.height))
+            let maxHeight = max(ra.height, rb.height)
+            let verticalGap: CGFloat
+            if ra.intersects(rb) {
+                verticalGap = 0
+            } else if ra.maxY < rb.minY {
+                verticalGap = rb.minY - ra.maxY
+            } else {
+                verticalGap = ra.minY - rb.maxY
+            }
+
+            // Строки одного абзаца обычно находятся на расстоянии порядка
+            // высоты строки. Независимые надписи на разных кнопках дальше друг
+            // от друга. Существенно более строгий порог не даёт им склеиваться.
+            guard verticalGap <= maxHeight * 0.85 else { return (false, -.greatestFiniteMagnitude) }
+
+            let overlap = horizontalOverlap(ra, rb)
+            let leftAlignment = 1 - min(1, abs(ra.minX - rb.minX) / max(ra.width, max(rb.width, 0.001)))
+
+            // Для многострочного блока нужен либо заметный горизонтальный
+            // overlap, либо практически одинаковая левая граница. Простое
+            // нахождение на одной вертикали больше не является достаточным.
+            guard overlap >= 0.55 || leftAlignment >= 0.72 else { return (false, -.greatestFiniteMagnitude) }
+
+            // Не склеиваем сильно отличающиеся по масштабу элементы. Это важно
+            // для фото пульта, где мелкие подписи находятся рядом с крупными
+            // названиями кнопок.
+            let sizeRatio = min(ra.height, rb.height) / max(ra.height, rb.height)
+            guard sizeRatio >= 0.45 else { return (false, -.greatestFiniteMagnitude) }
+
+            let score = Double(overlap * 3 + leftAlignment * 1.5 - verticalGap / height) - angleDelta * 2
+            return (true, score)
+        }
+
+        guard !blocks.isEmpty else { return [] }
+
+        // Обрабатываем сверху вниз, чтобы решение зависело от ближайшей строки,
+        // а не от порядка, в котором Vision вернул наблюдения.
+        let ordered = blocks.indices.sorted {
+            let a = normalizedRect(for: blocks[$0])
+            let b = normalizedRect(for: blocks[$1])
+            if abs(a.midY - b.midY) > 0.01 { return a.midY > b.midY }
+            return a.minX < b.minX
+        }
+
         var groups: [WorkingGroup] = []
-        for index in blocks.indices {
-            let block = blocks[index]
-            let rect = normalizedRect(for: block)
-            let angle = textAngle(for: block)
-            var best: Int?
-            var bestScore = -Double.infinity
+
+        for index in ordered {
+            var bestGroup: Int?
+            var bestScore = -Double.greatestFiniteMagnitude
 
             for groupIndex in groups.indices {
-                let group = groups[groupIndex]
-                guard abs(normalizedAngle(angle - group.angle)) < .pi / 12 else { continue }
-                let overlap = horizontalOverlap(rect, group.rect)
-                let verticalGap = verticalDistance(rect, group.rect)
-                let scale = max(rect.height, group.rect.height, 0.001)
-                let close = verticalGap <= scale * 1.25 || overlap > 0.55
-                guard close else { continue }
-                let proximity = max(0, 1 - verticalGap / (scale * 2.5))
-                let score = overlap * 2 + proximity
-                if score > bestScore {
-                    bestScore = score
-                    best = groupIndex
+                var groupBest = -Double.greatestFiniteMagnitude
+                for member in groups[groupIndex].indices {
+                    let result = lineCompatible(index, member)
+                    if result.0 { groupBest = max(groupBest, result.1) }
+                }
+
+                if groupBest > bestScore {
+                    bestScore = groupBest
+                    bestGroup = groupBest > -Double.greatestFiniteMagnitude ? groupIndex : nil
                 }
             }
 
-            if let best {
-                groups[best].indices.append(index)
-                groups[best].rect = groups[best].rect.union(rect)
-                let count = Double(groups[best].indices.count)
-                groups[best].angle = (groups[best].angle * (count - 1) + angle) / count
+            if let groupIndex = bestGroup {
+                groups[groupIndex].indices.append(index)
+                groups[groupIndex].rect = groups[groupIndex].rect.union(normalizedRect(for: blocks[index]))
+                let count = Double(groups[groupIndex].indices.count)
+                let angle = textAngle(for: blocks[index])
+                groups[groupIndex].angle = (groups[groupIndex].angle * (count - 1) + angle) / count
             } else {
-                groups.append(WorkingGroup(indices: [index], rect: rect, angle: angle))
+                groups.append(WorkingGroup(
+                    indices: [index],
+                    rect: normalizedRect(for: blocks[index]),
+                    angle: textAngle(for: blocks[index])
+                ))
             }
         }
 
@@ -300,14 +358,65 @@ struct PhotoResultView: View {
     ) -> [DisplayField] {
         zip(groups, translations).compactMap { group, translation in
             let clean = translation.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !clean.isEmpty else { return nil }
-            let rect = group.indices
-                .map { normalizedRect(for: blocks[$0]) }
-                .reduce(CGRect.null) { $0.union($1) }
+            guard !clean.isEmpty, !group.indices.isEmpty else { return nil }
+
             let angle = group.indices
                 .map { textAngle(for: blocks[$0]) }
-                .reduce(0, +) / Double(max(1, group.indices.count))
-            return DisplayField(text: clean, normalizedRect: rect, angle: angle)
+                .reduce(0, +) / Double(group.indices.count)
+
+            // Строим рамку в системе координат, повернутой вместе с текстом.
+            // Если сначала взять обычный axis-aligned bounding box, а потом
+            // повернуть его, наклонные надписи превращаются в большие ромбы.
+            // Здесь ширина/высота вычисляются вдоль реального направления текста.
+            let cosA = cos(angle)
+            let sinA = sin(angle)
+            let ux = CGFloat(cosA)
+            let uy = CGFloat(sinA)
+            let vx = CGFloat(-sinA)
+            let vy = CGFloat(cosA)
+
+            let points = group.indices.flatMap { index -> [CGPoint] in
+                let block = blocks[index]
+                return [
+                    CGPoint(x: block.topLeft.x, y: 1 - block.topLeft.y),
+                    CGPoint(x: block.topRight.x, y: 1 - block.topRight.y),
+                    CGPoint(x: block.bottomLeft.x, y: 1 - block.bottomLeft.y),
+                    CGPoint(x: block.bottomRight.x, y: 1 - block.bottomRight.y)
+                ]
+            }
+
+            let projectedU = points.map { $0.x * ux + $0.y * uy }
+            let projectedV = points.map { $0.x * vx + $0.y * vy }
+            let minU = projectedU.min() ?? 0
+            let maxU = projectedU.max() ?? 1
+            let minV = projectedV.min() ?? 0
+            let maxV = projectedV.max() ?? 1
+
+            // Небольшой запас только внутри самого поля — он нужен для текста,
+            // но не должен заметно раздувать поле поверх соседних надписей.
+            let width = max(0.001, maxU - minU)
+            let height = max(0.001, maxV - minV)
+            let centerU = (minU + maxU) * 0.5
+            let centerV = (minV + maxV) * 0.5
+            let centerX = centerU * ux + centerV * vx
+            let centerY = centerU * uy + centerV * vy
+
+            let rect = CGRect(
+                x: centerX - width * 0.5,
+                y: centerY - height * 0.5,
+                width: width,
+                height: height
+            )
+
+            // translatedField ожидает Vision-координаты (Y снизу вверх).
+            let visionRect = CGRect(
+                x: rect.minX,
+                y: 1 - rect.maxY,
+                width: rect.width,
+                height: rect.height
+            )
+
+            return DisplayField(text: clean, normalizedRect: visionRect, angle: angle)
         }
     }
 
