@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-final class ModelDownloadService: NSObject, ObservableObject, URLSessionDownloadDelegate {
+final class ModelDownloadService: NSObject, ObservableObject, @preconcurrency URLSessionDownloadDelegate {
     @Published private(set) var progress: Double = 0
     @Published private(set) var downloadedBytes: Int64 = 0
     @Published private(set) var totalBytes: Int64 = 0

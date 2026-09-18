@@ -29,6 +29,7 @@
 		000000000000000020000016 /* SpeechSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000016; };
 		000000000000000020000017 /* PhotoResultView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000017; };
 		000000000000000020000018 /* CompactTranslateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000018; };
+		000000000000000020000019 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000010000019; };
 		000000000000000010000000 /* MyfosaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MyfosaApp.swift; sourceTree = "<group>"; };
 		000000000000000010000001 /* Translation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/Translation.swift; sourceTree = "<group>"; };
 		000000000000000010000002 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AppConfig.swift; sourceTree = "<group>"; };
@@ -54,6 +55,7 @@
 		000000000000000010000016 /* SpeechSynthesizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SpeechSynthesizer.swift; sourceTree = "<group>"; };
 		000000000000000010000017 /* PhotoResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PhotoResultView.swift; sourceTree = "<group>"; };
 		000000000000000010000018 /* CompactTranslateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/CompactTranslateView.swift; sourceTree = "<group>"; };
+		000000000000000010000019 /* SpeechRecognizerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/SpeechRecognizerService.swift; sourceTree = "<group>"; };
 		300000000000000000000001 /* Myfosa.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Myfosa.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		300000000000000000000002 /* Myfosa */ = {isa = PBXGroup; children = (
 			000000000000000010000000 /* MyfosaApp.swift */,
@@ -81,6 +83,7 @@
 			000000000000000010000016 /* SpeechSynthesizer.swift */,
 			000000000000000010000017 /* PhotoResultView.swift */,
 			000000000000000010000018 /* CompactTranslateView.swift */,
+			000000000000000010000019 /* SpeechRecognizerService.swift */,
 		); path = Myfosa; sourceTree = "<group>"; };
 		300000000000000000000003 /* Products */ = {isa = PBXGroup; children = (300000000000000000000001 /* Myfosa.app */,); name = Products; sourceTree = "<group>"; };
 		300000000000000000000004 /* Myfosa */ = {isa = PBXNativeTarget; buildConfigurationList = 300000000000000000000007 /* Build configuration list for PBXNativeTarget "Myfosa" */; buildPhases = (300000000000000000000005 /* Sources */, 300000000000000000000006 /* Frameworks */, 300000000000000000000015 /* Resources */,); buildRules = (); dependencies = (); name = Myfosa; productName = Myfosa; productReference = 300000000000000000000001 /* Myfosa.app */; productType = "com.apple.product-type.application"; };
@@ -111,6 +114,7 @@
 			000000000000000020000016 /* SpeechSynthesizer.swift in Sources */,
 			000000000000000020000017 /* PhotoResultView.swift in Sources */,
 			000000000000000020000018 /* CompactTranslateView.swift in Sources */,
+			000000000000000020000019 /* SpeechRecognizerService.swift in Sources */,
 		); runOnlyForDeploymentPostprocessing = 0; };
 		300000000000000000000006 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		300000000000000000000015 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
