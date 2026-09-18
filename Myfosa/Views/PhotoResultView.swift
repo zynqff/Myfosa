@@ -171,7 +171,7 @@ struct PhotoResultView: View {
             // Полупрозрачный тёплый белый: перевод остаётся читаемым,
             // а изображение под ним мягко просвечивает.
             .background(
-                Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.78),
+                Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.92),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
             .frame(width: max(1, field.rect.width), height: max(1, field.rect.height))

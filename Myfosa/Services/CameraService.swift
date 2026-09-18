@@ -93,10 +93,48 @@ final class CameraService: NSObject, ObservableObject {
             self.session.beginConfiguration()
             self.session.sessionPreset = .photo
 
-            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+            // Используем виртуальную Triple Camera, чтобы iPhone сам переключался
+            // между Wide/Ultra Wide/Telephoto. Это особенно важно для макро:
+            // при близком объекте система может перейти на Ultra Wide, у которой
+            // минимальная дистанция фокусировки значительно меньше.
+            let device = AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back)
+                ?? AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back)
+                ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+
+            if let device,
                let input = try? AVCaptureDeviceInput(device: device),
                self.session.canAddInput(input) {
                 self.session.addInput(input)
+
+                do {
+                    try device.lockForConfiguration()
+
+                    // Непрерывный автофокус оставляет объектив свободным
+                    // для автоматического выбора фокуса на близком объекте.
+                    if device.isFocusModeSupported(.continuousAutoFocus) {
+                        device.focusMode = .continuousAutoFocus
+                    }
+                    if device.isExposureModeSupported(.continuousAutoExposure) {
+                        device.exposureMode = .continuousAutoExposure
+                    }
+                    device.isSubjectAreaChangeMonitoringEnabled = true
+
+                    // Для виртуальной камеры разрешаем системе автоматически
+                    // выбирать физический объектив, включая переход в макро.
+                    if device.deviceType == .builtInTripleCamera || device.deviceType == .builtInDualWideCamera {
+                        if device.activePrimaryConstituentDeviceSwitchingBehavior != .unsupported {
+                            device.setPrimaryConstituentDeviceSwitchingBehavior(
+                                .auto,
+                                restrictedSwitchingBehaviorConditions: []
+                            )
+                        }
+                    }
+
+                    device.unlockForConfiguration()
+                } catch {
+                    // Если конкретное устройство не позволяет изменить
+                    // часть параметров, базовая камера всё равно продолжает работать.
+                }
             }
             if self.session.canAddOutput(self.photoOutput) {
                 self.session.addOutput(self.photoOutput)
@@ -112,7 +150,10 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     func toggleTorch() {
-        guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else { return }
+        let device = session.inputs
+            .compactMap { ($0 as? AVCaptureDeviceInput)?.device }
+            .first ?? AVCaptureDevice.default(for: .video)
+        guard let device, device.hasTorch else { return }
         do {
             try device.lockForConfiguration()
             device.torchMode = isTorchOn ? .off : .on
