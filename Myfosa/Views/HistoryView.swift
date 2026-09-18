@@ -17,7 +17,10 @@ struct HistoryView: View {
                     ScrollView {
                         LazyVStack(spacing: 12) {
                             ForEach(items) { item in
-                                TranslationCardView(item: item)
+                                TranslationCardView(item: item, onDelete: {
+                                    HistoryStore.shared.delete(id: item.id)
+                                    reload()
+                                })
                             }
                         }
                         .padding()

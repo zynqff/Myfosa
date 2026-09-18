@@ -24,6 +24,12 @@ final class TranslatorViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var config: RemoteAppConfig?
 
+    /// Становится true только после того, как первая проверка наличия модели
+    /// завершена (см. init) — пока false, экран «Перевод» ничего не рисует,
+    /// чтобы не мелькнуть сначала неверным состоянием (например, композером
+    /// вместо экрана загрузки модели), а сразу показать правильное.
+    @Published var isReady = false
+
     /// Установлена ли на устройстве модель, соответствующая текущему конфигу.
     @Published var isModelInstalled = false
 
@@ -44,6 +50,8 @@ final class TranslatorViewModel: ObservableObject {
     let modelStore = ModelStore()
     let translator: LlamaTranslatorService
     let downloader = ModelDownloadService()
+    let speech = SpeechSynthesizer()
+    let speechRecognizer = SpeechRecognizerService()
 
     private var idleTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
@@ -68,7 +76,27 @@ final class TranslatorViewModel: ObservableObject {
         downloader.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
-        Task { await refreshConfig() }
+        // speech/speechRecognizer — тоже отдельные ObservableObject, их
+        // изменения (speakingID, isListening) сами по себе не будят экраны,
+        // подписанные только на TranslatorViewModel — прокидываем и их.
+        speech.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        speechRecognizer.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        Task {
+            let started = DispatchTime.now()
+            await refreshConfig()
+            // Не даём интерфейсу "мигнуть" неправильным состоянием, пока идёт
+            // проверка наличия модели: держим экран пустым минимум ~60мс, даже
+            // если проверка завершилась быстрее. Если же сама проверка заняла
+            // дольше — isReady включается сразу же, без лишнего ожидания.
+            let elapsedMs = (DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000
+            if elapsedMs < 60 { try? await Task.sleep(for: .milliseconds(60 - Int(elapsedMs))) }
+            isReady = true
+        }
     }
 
     func refreshConfig() async {
@@ -184,6 +212,45 @@ final class TranslatorViewModel: ObservableObject {
     func swapLanguages() {
         let old = sourceLanguage; sourceLanguage = targetLanguage; targetLanguage = old
         schedulePreview()
+    }
+
+    // MARK: - Голосовой ввод
+
+    /// Запускает голосовой ввод в верхнее (исходное) поле. Если поля нужно
+    /// поменять местами — это делает вызывающий (View), свапая языки перед
+    /// вызовом, ровно как при обычном тапе по нижнему полю.
+    func startDictation() {
+        Task {
+            let granted = await speechRecognizer.requestPermissions()
+            guard granted else {
+                errorMessage = SpeechRecognitionError.permissionDenied.localizedDescription
+                return
+            }
+            clearInput()
+            speechRecognizer.start(
+                language: sourceLanguage,
+                onPartialResult: { [weak self] text in
+                    guard let self else { return }
+                    self.sourceText = text
+                    self.beginTyping()
+                },
+                onError: { [weak self] error in
+                    self?.errorMessage = error.localizedDescription
+                }
+            )
+        }
+    }
+
+    func stopDictation() {
+        speechRecognizer.stop()
+    }
+
+    // MARK: - Удаление одной карточки
+
+    /// Удаляет один перевод из текущей (ещё не заархивированной) сессии —
+    /// свайп по карточке на экране «Перевод».
+    func deleteFromSession(_ item: TranslationItem) {
+        history.removeAll { $0.id == item.id }
     }
 
     /// Гарантирует, что модель скачана и загружена в память. Используется
