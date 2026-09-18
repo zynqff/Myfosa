@@ -431,36 +431,74 @@ struct PhotoResultView: View {
         let verticalInset = max(3, min(7, originalRect.height * 0.12))
         let preferredFont = max(12, min(22, originalRect.height * 0.72))
 
-        let natural = measuredTextSize(
-            field.text,
-            fontSize: preferredFont,
-            maxWidth: max(1, originalRect.width * 1.35)
-        )
-        let maxFieldWidth = max(originalRect.width, originalRect.width * 1.35)
-        let maxFieldHeight = max(originalRect.height, originalRect.height * 1.55)
-        let fieldWidth = min(maxFieldWidth, max(originalRect.width, natural.width + horizontalInset * 2))
-        let fieldHeight = min(maxFieldHeight, max(originalRect.height, natural.height + verticalInset * 2))
-
-        let availableWidth = max(1, fieldWidth - horizontalInset * 2)
-        let availableHeight = max(1, fieldHeight - verticalInset * 2)
-        let fontSize = fittingFontSize(
+        // На втором скриншоте («родной» Перевод) короткие подписи кнопок всегда
+        // остаются в одну строку — карточка просто ужимается по ширине и по
+        // шрифту, а не переносится на 2–3 строки, как было раньше. Поэтому
+        // сначала пытаемся ужать шрифт так, чтобы весь перевод влез в одну
+        // строку, и только если это совсем невозможно даже на минимальном
+        // читаемом размере — переходим к переносу строк (для редких длинных
+        // предложений).
+        let singleLineMinFont: CGFloat = 8
+        let maxSingleLineWidth = max(originalRect.width, originalRect.width * 1.6)
+        let singleLineAvailableWidth = max(1, maxSingleLineWidth - horizontalInset * 2)
+        let singleLineFont = fittingSingleLineFontSize(
             for: field.text,
-            maxWidth: availableWidth,
-            maxHeight: availableHeight,
-            preferred: preferredFont
+            maxWidth: singleLineAvailableWidth,
+            preferred: preferredFont,
+            minimum: singleLineMinFont
         )
+        let singleLineWidth = measuredLineWidth(field.text, fontSize: singleLineFont)
+        // Группы, изначально состоявшие из нескольких строк оригинала (настоящий
+        // абзац), сохраняют перевод построчно — им перенос нужен по смыслу, а
+        // не из-за нехватки места, поэтому в одну строку их не сжимаем.
+        let fitsOneLine = !field.text.contains("\n") && singleLineWidth <= singleLineAvailableWidth + 0.5
 
-        // Если текст всё ещё не помещается на выбранном размере, сначала даём ему
-        // больше высоты за счёт переносов, но никогда не используем truncation.
-        let finalFontSize = max(10.5, fontSize)
+        let content: Text
+        let finalFontSize: CGFloat
+        let fieldWidth: CGFloat
+        let fieldHeight: CGFloat
+        let availableWidth: CGFloat
+        let availableHeight: CGFloat
+        let lineLimit: Int?
 
-        return Text(field.text)
+        if fitsOneLine {
+            finalFontSize = singleLineFont
+            let lineHeight = measuredTextSize(field.text, fontSize: finalFontSize, maxWidth: .greatestFiniteMagnitude).height
+            fieldWidth = min(maxSingleLineWidth, max(originalRect.width, singleLineWidth + horizontalInset * 2))
+            fieldHeight = max(originalRect.height, lineHeight + verticalInset * 2)
+            availableWidth = max(1, fieldWidth - horizontalInset * 2)
+            availableHeight = max(1, fieldHeight - verticalInset * 2)
+            lineLimit = 1
+        } else {
+            let natural = measuredTextSize(
+                field.text,
+                fontSize: preferredFont,
+                maxWidth: max(1, originalRect.width * 1.35)
+            )
+            let maxFieldWidth = max(originalRect.width, originalRect.width * 1.35)
+            let maxFieldHeight = max(originalRect.height, originalRect.height * 1.55)
+            fieldWidth = min(maxFieldWidth, max(originalRect.width, natural.width + horizontalInset * 2))
+            fieldHeight = min(maxFieldHeight, max(originalRect.height, natural.height + verticalInset * 2))
+            availableWidth = max(1, fieldWidth - horizontalInset * 2)
+            availableHeight = max(1, fieldHeight - verticalInset * 2)
+            finalFontSize = max(10.5, fittingFontSize(
+                for: field.text,
+                maxWidth: availableWidth,
+                maxHeight: availableHeight,
+                preferred: preferredFont
+            ))
+            lineLimit = nil
+        }
+        content = Text(field.text)
+
+        return content
             .font(.system(size: finalFontSize, weight: .semibold))
             .foregroundStyle(Color(red: 0.12, green: 0.15, blue: 0.13))
             .multilineTextAlignment(.leading)
             .lineSpacing(max(1, finalFontSize * 0.08))
             .allowsTightening(true)
-            .lineLimit(nil)
+            .lineLimit(lineLimit)
+            .minimumScaleFactor(lineLimit == 1 ? 0.85 : 1)
             .fixedSize(horizontal: false, vertical: true)
             .frame(width: availableWidth, height: availableHeight, alignment: .leading)
             .padding(.horizontal, horizontalInset)
@@ -470,8 +508,53 @@ struct PhotoResultView: View {
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
             .frame(width: fieldWidth, height: fieldHeight)
-            .rotationEffect(.radians(field.angle))
+            .rotationEffect(.radians(displayAngle(for: field.angle)))
             .position(x: originalRect.midX, y: originalRect.midY)
+    }
+
+    private func measuredLineWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
+        let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+        return (text as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    /// Подбирает максимальный размер шрифта, при котором весь текст помещается
+    /// в одну строку заданной ширины (без переноса).
+    private func fittingSingleLineFontSize(
+        for text: String,
+        maxWidth: CGFloat,
+        preferred: CGFloat,
+        minimum: CGFloat
+    ) -> CGFloat {
+        guard maxWidth > 1, !text.isEmpty else { return minimum }
+
+        func fits(_ size: CGFloat) -> Bool {
+            measuredLineWidth(text, fontSize: size) <= maxWidth + 0.5
+        }
+
+        if fits(preferred) { return preferred }
+        if !fits(minimum) { return minimum }
+
+        var low = minimum
+        var high = preferred
+        for _ in 0..<14 {
+            let mid = (low + high) / 2
+            if fits(mid) { low = mid } else { high = mid }
+        }
+        return low
+    }
+
+    /// Системный Перевод в приложении «Камера» (см. второй скриншот) всегда
+    /// рисует переведённый текст ровно по горизонтали, даже если сама подпись
+    /// на кнопке напечатана под углом (например, слова вокруг круглого
+    /// джойстика пульта). Раньше мы буквально поворачивали поле на угол
+    /// исходной строки — из-за этого подписи вокруг «крестовины» пульта
+    /// получались раздёрганными и нечитаемыми (как на первом скриншоте).
+    /// Теперь ощутимый поворот (типично 20°+ у круговых кнопок) обнуляется, и
+    /// остаётся лишь небольшая поправка на реальный наклон самого фото при
+    /// съёмке с руки.
+    private func displayAngle(for angle: Double) -> Double {
+        let maxCorrection = Double.pi / 15 // ≈ 12°
+        return max(-maxCorrection, min(maxCorrection, angle))
     }
 
     private func measuredTextSize(_ text: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGSize {
