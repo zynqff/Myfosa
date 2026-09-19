@@ -216,9 +216,17 @@ struct PhotoResultView: View {
             }
 
             // Строки одного абзаца обычно находятся на расстоянии порядка
-            // высоты строки. Независимые надписи на разных кнопках дальше друг
-            // от друга. Существенно более строгий порог не даёт им склеиваться.
-            guard verticalGap <= maxHeight * 0.85 else { return (false, -.greatestFiniteMagnitude) }
+            // половины высоты строки. Независимые надписи (заголовок,
+            // подпись-ярлык вроде «Тема урока»/«Задание», ссылка «Читать
+            // полный текст» под абзацем) в интерфейсах часто отстоят от
+            // соседнего блока на такой же по величине зазор — расстояние
+            // само по себе НЕ отличает «следующую строку абзаца» от
+            // «следующего элемента интерфейса» (проверено измерением на
+            // реальном скриншоте: оба случая дают тот же зазор в ~половину
+            // высоты строки). Поэтому порог по зазору заметно строже, чем
+            // раньше, а решающую роль играет соотношение размеров шрифта
+            // ниже.
+            guard verticalGap <= maxHeight * 0.65 else { return (false, -.greatestFiniteMagnitude) }
 
             let overlap = horizontalOverlap(ra, rb)
             let leftAlignment = 1 - min(1, abs(ra.minX - rb.minX) / max(ra.width, max(rb.width, 0.001)))
@@ -228,11 +236,18 @@ struct PhotoResultView: View {
             // нахождение на одной вертикали больше не является достаточным.
             guard overlap >= 0.55 || leftAlignment >= 0.72 else { return (false, -.greatestFiniteMagnitude) }
 
-            // Не склеиваем сильно отличающиеся по масштабу элементы. Это важно
-            // для фото пульта, где мелкие подписи находятся рядом с крупными
-            // названиями кнопок.
+            // Не склеиваем строки разного масштаба шрифта. Раньше порог
+            // (0.45) пропускал пары вроде «подпись-ярлык (мелкий шрифт) +
+            // абзац (крупный шрифт)» — на реальном скриншоте у таких пар
+            // соотношение высот около 0.78, и они с готовностью склеивались
+            // в один смысловой ком («Тема урока» + текст темы, «Задание» +
+            // текст задания + ссылка «Читать полный текст»). Порог поднят
+            // так, чтобы такие подпись/ссылка-к-абзацу пары больше не
+            // проходили, а настоящие перенесённые строки одного абзаца
+            // (шрифт практически идентичен, соотношение близко к 1) — по
+            // прежнему проходили свободно.
             let sizeRatio = min(ra.height, rb.height) / max(ra.height, rb.height)
-            guard sizeRatio >= 0.45 else { return (false, -.greatestFiniteMagnitude) }
+            guard sizeRatio >= 0.82 else { return (false, -.greatestFiniteMagnitude) }
 
             let score = Double(overlap * 3 + leftAlignment * 1.5 - verticalGap / height) - angleDelta * 2
             return (true, score)
@@ -379,8 +394,15 @@ struct PhotoResultView: View {
         let buttonFields = fields.filter { !$0.text.contains("\n") }
         let paragraphFields = fields.filter { $0.text.contains("\n") }
 
-        var layouts = buttonFields.map { buttonLayout(for: $0, in: displayRect) }
-        layouts.append(contentsOf: paragraphLayouts(for: paragraphFields, in: displayRect))
+        // Карточки-кнопки не растут (buttonLayout), поэтому их можно
+        // посчитать первыми и передать дальше как неподвижные препятствия:
+        // растущий вверх абзац не должен наехать и закрыть собой, скажем,
+        // заголовок или подпись-ярлык, которые стоят прямо над ним.
+        let buttonLayoutsResult = buttonFields.map { buttonLayout(for: $0, in: displayRect) }
+        let obstacles = buttonLayoutsResult.map(\.frame)
+
+        var layouts = buttonLayoutsResult
+        layouts.append(contentsOf: paragraphLayouts(for: paragraphFields, avoiding: obstacles, in: displayRect))
         return layouts
     }
 
@@ -448,7 +470,7 @@ struct PhotoResultView: View {
     /// ограничен нижним краем карточки, что лежит выше в том же столбце (или
     /// верхом фото), а когда даже этого места не хватает — включается
     /// уменьшение шрифта и перенос на 2 и более строк.
-    private func paragraphLayouts(for fields: [DisplayField], in displayRect: CGRect) -> [FieldLayout] {
+    private func paragraphLayouts(for fields: [DisplayField], avoiding obstacles: [CGRect], in displayRect: CGRect) -> [FieldLayout] {
         guard !fields.isEmpty else { return [] }
 
         struct Prelim {
@@ -499,7 +521,10 @@ struct PhotoResultView: View {
             let probe = CGRect(x: item.centerX - item.fixedWidth / 2, y: 0, width: item.fixedWidth, height: 1)
 
             // Самое высокое допустимое положение верхнего края: верх фото,
-            // либо низ уже размещённой карточки над этой в том же столбце.
+            // низ уже размещённой карточки-абзаца над этой в том же
+            // столбце, либо низ неподвижной карточки-кнопки/заголовка/
+            // подписи над ней (obstacles) — растущий вверх абзац не должен
+            // наехать и закрыть их собой.
             var upperLimit = displayRect.minY
             for previousPosition in 0..<position {
                 let placedIndex = order[previousPosition]
@@ -507,6 +532,11 @@ struct PhotoResultView: View {
                 guard placedFrame.maxY <= item.originalBottom else { continue }
                 guard horizontalOverlap(placedFrame, probe) > 0.15 else { continue }
                 upperLimit = max(upperLimit, placedFrame.maxY + gap)
+            }
+            for obstacleFrame in obstacles {
+                guard obstacleFrame.maxY <= item.originalBottom else { continue }
+                guard horizontalOverlap(obstacleFrame, probe) > 0.15 else { continue }
+                upperLimit = max(upperLimit, obstacleFrame.maxY + gap)
             }
 
             let availableWidth = max(1, item.fixedWidth - item.horizontalInset * 2)
