@@ -368,39 +368,30 @@ struct PhotoResultView: View {
         let verticalInset: CGFloat
     }
 
-    /// Считает независимую раскладку каждого поля (naturalLayout), а затем
-    /// раздвигает по вертикали те карточки, что пересекаются и при этом лежат
-    /// в одном текстовом столбце (заметный overlap по X). Именно такое
-    /// пересечение превращало плотный диалог в один нечитаемый ком текста
-    /// (см. первый скриншот): у каждой строки своя карточка, и как только
-    /// перевод оказывался чуть выше исходной строки, соседние карточки
-    /// наезжали друг на друга и сливались в сплошное пятно текста поверх
-    /// фото. Подписи кнопок на пульте лежат рядом, а не друг под другом,
-    /// поэтому overlap по X у них низкий и эта раскладка их не трогает.
+    /// Раскладывает все поля. Подписи-«кнопки» (короткие, одна исходная
+    /// строка) и абзацы (диалоги/несколько исходных строк) ведут себя
+    /// по-разному, поэтому считаются отдельно — см. buttonLayout и
+    /// paragraphLayouts ниже. Оба вида карточек в итоге прижимаются к
+    /// границам фото (clamped), чтобы ничего не вылезало за пределы кадра.
     private func layoutFields(_ fields: [DisplayField], in displayRect: CGRect) -> [FieldLayout] {
         guard !fields.isEmpty else { return [] }
 
-        var layouts = fields.map { naturalLayout(for: $0, in: displayRect) }
-        let order = layouts.indices.sorted { layouts[$0].frame.minY < layouts[$1].frame.minY }
+        let buttonFields = fields.filter { !$0.text.contains("\n") }
+        let paragraphFields = fields.filter { $0.text.contains("\n") }
 
-        for position in 1..<order.count {
-            let currentIndex = order[position]
-            for previousPosition in 0..<position {
-                let previousIndex = order[previousPosition]
-                guard horizontalOverlap(layouts[previousIndex].frame, layouts[currentIndex].frame) > 0.2 else { continue }
-
-                let minGap: CGFloat = 3
-                let requiredTop = layouts[previousIndex].frame.maxY + minGap
-                if layouts[currentIndex].frame.minY < requiredTop {
-                    layouts[currentIndex].frame.origin.y = requiredTop
-                }
-            }
-        }
-
+        var layouts = buttonFields.map { buttonLayout(for: $0, in: displayRect) }
+        layouts.append(contentsOf: paragraphLayouts(for: paragraphFields, in: displayRect))
         return layouts
     }
 
-    private func naturalLayout(for field: DisplayField, in displayRect: CGRect) -> FieldLayout {
+    /// Подписи кнопок пульта и т.п.: карточка остаётся ровно в границах
+    /// исходной строки — не растёт ни по ширине, ни по высоте. Если перевод
+    /// не помещается на исходном месте, сначала переносим на 2 и более
+    /// строк, и только когда переноса мало — уменьшаем шрифт (вплоть до
+    /// мелкого, но читаемого). Раз карточка никогда не выходит за пределы
+    /// своей исходной области, соседние подписи (стоящие на пульте вплотную
+    /// друг к другу) физически не могут наехать одна на другую.
+    private func buttonLayout(for field: DisplayField, in displayRect: CGRect) -> FieldLayout {
         // Экран и фото имеют одинаковые пропорции (AVMakeRect сохраняет
         // aspect ratio), поэтому масштаб «пиксели фото → пиксели экрана»
         // одинаков по x и по y — можно использовать одно число.
@@ -413,106 +404,171 @@ struct PhotoResultView: View {
             width: field.sizeInImagePixels.width * scale,
             height: field.sizeInImagePixels.height * scale
         )
-        let originalRect = CGRect(
+
+        let horizontalInset = max(3, min(8, originalSize.height * 0.16))
+        let verticalInset = max(2, min(5, originalSize.height * 0.10))
+        let preferredFont = max(12, min(22, originalSize.height * 0.72))
+
+        let availableWidth = max(1, originalSize.width - horizontalInset * 2)
+        let availableHeight = max(1, originalSize.height - verticalInset * 2)
+        // Нижняя граница шрифта здесь ниже, чем у абзацев: карточке некуда
+        // расти, поэтому в самом тесном случае лучше мелкий, но всё ещё
+        // читаемый шрифт, чем вылезание за свою кнопку.
+        let fontSize = fittingFontSize(
+            for: field.text,
+            maxWidth: availableWidth,
+            maxHeight: availableHeight,
+            preferred: preferredFont,
+            minimum: 6.5
+        )
+
+        let frame = clamped(CGRect(
             x: centerScreen.x - originalSize.width / 2,
             y: centerScreen.y - originalSize.height / 2,
             width: originalSize.width,
             height: originalSize.height
-        )
-
-        // Поле остаётся привязанным к исходной области, но не строго её
-        // размером: русский перевод почти всегда длиннее английского
-        // оригинала, и если совсем не давать полю расти, текст просто не
-        // помещается («не влазит»). Основной способ вместить текст — ужать
-        // шрифт и перенести строки; расширение карточки — на крайний случай,
-        // а перекрытие с соседними карточками решает layoutFields ниже.
-        let horizontalInset = max(4, min(10, originalRect.height * 0.20))
-        let verticalInset = max(3, min(7, originalRect.height * 0.12))
-        let preferredFont = max(12, min(22, originalRect.height * 0.72))
-
-        // На эталонном скриншоте («родной» Перевод в приложении «Камера»)
-        // короткие подписи кнопок всегда остаются в одну строку — карточка
-        // просто ужимается по ширине и по шрифту, а не переносится на 2–3
-        // строки. Поэтому сначала пытаемся ужать шрифт так, чтобы весь
-        // перевод влез в одну строку, и только если это совсем невозможно
-        // даже на минимальном читаемом размере — переходим к переносу строк
-        // (для редких длинных предложений).
-        let singleLineMinFont: CGFloat = 8
-        let maxSingleLineWidth = max(originalRect.width, originalRect.width * 1.6)
-        let singleLineAvailableWidth = max(1, maxSingleLineWidth - horizontalInset * 2)
-        let singleLineFont = fittingSingleLineFontSize(
-            for: field.text,
-            maxWidth: singleLineAvailableWidth,
-            preferred: preferredFont,
-            minimum: singleLineMinFont
-        )
-        let singleLineWidth = measuredLineWidth(field.text, fontSize: singleLineFont)
-        // Группы, изначально состоявшие из нескольких строк оригинала (настоящий
-        // абзац), сохраняют перевод построчно — им перенос нужен по смыслу, а
-        // не из-за нехватки места, поэтому в одну строку их не сжимаем.
-        let fitsOneLine = !field.text.contains("\n") && singleLineWidth <= singleLineAvailableWidth + 0.5
-
-        let finalFontSize: CGFloat
-        let fieldWidth: CGFloat
-        let fieldHeight: CGFloat
-        let availableWidth: CGFloat
-        let availableHeight: CGFloat
-        let lineLimit: Int?
-
-        if fitsOneLine {
-            finalFontSize = singleLineFont
-            let lineHeight = measuredTextSize(field.text, fontSize: finalFontSize, maxWidth: .greatestFiniteMagnitude).height
-            fieldWidth = min(maxSingleLineWidth, max(originalRect.width, singleLineWidth + horizontalInset * 2))
-            fieldHeight = max(originalRect.height, lineHeight + verticalInset * 2)
-            availableWidth = max(1, fieldWidth - horizontalInset * 2)
-            availableHeight = max(1, fieldHeight - verticalInset * 2)
-            lineLimit = 1
-        } else {
-            let natural = measuredTextSize(
-                field.text,
-                fontSize: preferredFont,
-                maxWidth: max(1, originalRect.width * 1.45)
-            )
-            let maxFieldWidth = max(originalRect.width, originalRect.width * 1.45)
-            // У длинного перевода абзаца (диалог из первого скриншота) даём
-            // карточке заметно больше вертикального запаса, чем раньше
-            // (было максимум ×1.3) — иначе перевод обрезался/наезжал за
-            // пределы своей белой карточки прямо на фон. Раздвижку по
-            // вертикали между соседними карточками теперь берёт на себя
-            // layoutFields, поэтому щедрый рост здесь уже не приводит к
-            // «стене» слипшегося текста, как раньше. Абсолютный потолок в
-            // 60% высоты кадра — просто страховка от патологических случаев.
-            let maxFieldHeight = min(displayRect.height * 0.6, max(originalRect.height, originalRect.height * 2.4))
-            fieldWidth = min(maxFieldWidth, max(originalRect.width, natural.width + horizontalInset * 2))
-            fieldHeight = min(maxFieldHeight, max(originalRect.height, natural.height + verticalInset * 2))
-            availableWidth = max(1, fieldWidth - horizontalInset * 2)
-            availableHeight = max(1, fieldHeight - verticalInset * 2)
-            finalFontSize = max(9.5, fittingFontSize(
-                for: field.text,
-                maxWidth: availableWidth,
-                maxHeight: availableHeight,
-                preferred: preferredFont
-            ))
-            lineLimit = nil
-        }
-
-        let frame = CGRect(
-            x: centerScreen.x - fieldWidth / 2,
-            y: centerScreen.y - fieldHeight / 2,
-            width: fieldWidth,
-            height: fieldHeight
-        )
+        ), to: displayRect)
 
         return FieldLayout(
             id: field.id,
             text: field.text,
             frame: frame,
             angle: displayAngle(for: field.angle),
-            fontSize: finalFontSize,
-            lineLimit: lineLimit,
+            fontSize: fontSize,
+            lineLimit: nil,
             horizontalInset: horizontalInset,
             verticalInset: verticalInset
         )
+    }
+
+    /// Абзацы (исходно многострочный текст — диалоги, длинные подписи).
+    /// Перевод почти всегда длиннее оригинала, но карточка растёт только по
+    /// высоте и только вверх — ширина остаётся исходной, чтобы перевод не
+    /// наезжал вбок на соседний текст и не вылезал за фото. Рост вверх
+    /// ограничен нижним краем карточки, что лежит выше в том же столбце (или
+    /// верхом фото), а когда даже этого места не хватает — включается
+    /// уменьшение шрифта и перенос на 2 и более строк.
+    private func paragraphLayouts(for fields: [DisplayField], in displayRect: CGRect) -> [FieldLayout] {
+        guard !fields.isEmpty else { return [] }
+
+        struct Prelim {
+            let field: DisplayField
+            let centerX: CGFloat
+            let originalTop: CGFloat
+            let originalBottom: CGFloat
+            let fixedWidth: CGFloat
+            let horizontalInset: CGFloat
+            let verticalInset: CGFloat
+            let preferredFont: CGFloat
+        }
+
+        let scale = image.size.width > 0 ? displayRect.width / image.size.width : 1
+        let prelim: [Prelim] = fields.map { field in
+            let centerScreen = CGPoint(
+                x: displayRect.minX + field.centerNormalized.x * displayRect.width,
+                y: displayRect.minY + field.centerNormalized.y * displayRect.height
+            )
+            let originalSize = CGSize(
+                width: field.sizeInImagePixels.width * scale,
+                height: field.sizeInImagePixels.height * scale
+            )
+            return Prelim(
+                field: field,
+                centerX: centerScreen.x,
+                originalTop: centerScreen.y - originalSize.height / 2,
+                originalBottom: centerScreen.y + originalSize.height / 2,
+                fixedWidth: originalSize.width,
+                horizontalInset: max(4, min(10, originalSize.height * 0.20)),
+                verticalInset: max(3, min(7, originalSize.height * 0.12)),
+                preferredFont: max(12, min(22, originalSize.height * 0.72))
+            )
+        }
+
+        // Сверху вниз: тогда для каждой карточки уже известно, куда доросла
+        // (и где остановилась) карточка над ней.
+        let order = prelim.indices.sorted { prelim[$0].originalBottom < prelim[$1].originalBottom }
+        var finalizedFrames: [CGRect] = Array(repeating: .zero, count: prelim.count)
+        var layouts: [FieldLayout] = []
+        layouts.reserveCapacity(prelim.count)
+
+        let gap: CGFloat = 3
+
+        for position in order.indices {
+            let index = order[position]
+            let item = prelim[index]
+            let probe = CGRect(x: item.centerX - item.fixedWidth / 2, y: 0, width: item.fixedWidth, height: 1)
+
+            // Самое высокое допустимое положение верхнего края: верх фото,
+            // либо низ уже размещённой карточки над этой в том же столбце.
+            var upperLimit = displayRect.minY
+            for previousPosition in 0..<position {
+                let placedIndex = order[previousPosition]
+                let placedFrame = finalizedFrames[placedIndex]
+                guard placedFrame.maxY <= item.originalBottom else { continue }
+                guard horizontalOverlap(placedFrame, probe) > 0.15 else { continue }
+                upperLimit = max(upperLimit, placedFrame.maxY + gap)
+            }
+
+            let availableWidth = max(1, item.fixedWidth - item.horizontalInset * 2)
+            let maxHeightAvailable = max(
+                item.preferredFont + item.verticalInset * 2,
+                item.originalBottom - upperLimit
+            )
+            let availableHeight = max(1, maxHeightAvailable - item.verticalInset * 2)
+
+            let fontSize = fittingFontSize(
+                for: item.field.text,
+                maxWidth: availableWidth,
+                maxHeight: availableHeight,
+                preferred: item.preferredFont,
+                minimum: 8
+            )
+            let measured = measuredTextSize(item.field.text, fontSize: fontSize, maxWidth: availableWidth)
+            let neededHeight = min(
+                maxHeightAvailable,
+                max(item.originalBottom - item.originalTop, measured.height + item.verticalInset * 2)
+            )
+
+            let frame = clamped(CGRect(
+                x: item.centerX - item.fixedWidth / 2,
+                y: item.originalBottom - neededHeight,
+                width: item.fixedWidth,
+                height: neededHeight
+            ), to: displayRect)
+            finalizedFrames[index] = frame
+
+            layouts.append(FieldLayout(
+                id: item.field.id,
+                text: item.field.text,
+                frame: frame,
+                angle: displayAngle(for: item.field.angle),
+                fontSize: fontSize,
+                lineLimit: nil,
+                horizontalInset: item.horizontalInset,
+                verticalInset: item.verticalInset
+            ))
+        }
+
+        return layouts
+    }
+
+    /// Сдвигает (не сжимает) прямоугольник так, чтобы он не выходил за
+    /// границы фото — это последняя защита от текста, вылезающего за экран.
+    private func clamped(_ frame: CGRect, to bounds: CGRect) -> CGRect {
+        var result = frame
+        if result.width >= bounds.width {
+            result.origin.x = bounds.minX
+        } else {
+            if result.minX < bounds.minX { result.origin.x = bounds.minX }
+            if result.maxX > bounds.maxX { result.origin.x = bounds.maxX - result.width }
+        }
+        if result.height >= bounds.height {
+            result.origin.y = bounds.minY
+        } else {
+            if result.minY < bounds.minY { result.origin.y = bounds.minY }
+            if result.maxY > bounds.maxY { result.origin.y = bounds.maxY - result.height }
+        }
+        return result
     }
 
     private func fieldView(_ layout: FieldLayout) -> some View {
@@ -544,37 +600,6 @@ struct PhotoResultView: View {
             .frame(width: layout.frame.width, height: layout.frame.height)
             .rotationEffect(.radians(layout.angle))
             .position(x: layout.frame.midX, y: layout.frame.midY)
-    }
-
-    private func measuredLineWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
-        let font = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
-        return (text as NSString).size(withAttributes: [.font: font]).width
-    }
-
-    /// Подбирает максимальный размер шрифта, при котором весь текст помещается
-    /// в одну строку заданной ширины (без переноса).
-    private func fittingSingleLineFontSize(
-        for text: String,
-        maxWidth: CGFloat,
-        preferred: CGFloat,
-        minimum: CGFloat
-    ) -> CGFloat {
-        guard maxWidth > 1, !text.isEmpty else { return minimum }
-
-        func fits(_ size: CGFloat) -> Bool {
-            measuredLineWidth(text, fontSize: size) <= maxWidth + 0.5
-        }
-
-        if fits(preferred) { return preferred }
-        if !fits(minimum) { return minimum }
-
-        var low = minimum
-        var high = preferred
-        for _ in 0..<14 {
-            let mid = (low + high) / 2
-            if fits(mid) { low = mid } else { high = mid }
-        }
-        return low
     }
 
     /// Показываем реальный наклон исходной строки — как это делает системный
@@ -611,9 +636,9 @@ struct PhotoResultView: View {
         for text: String,
         maxWidth: CGFloat,
         maxHeight: CGFloat,
-        preferred: CGFloat
+        preferred: CGFloat,
+        minimum: CGFloat = 9
     ) -> CGFloat {
-        let minimum: CGFloat = 9
         guard maxWidth > 1, maxHeight > 1, !text.isEmpty else { return minimum }
 
         func fits(_ size: CGFloat) -> Bool {
