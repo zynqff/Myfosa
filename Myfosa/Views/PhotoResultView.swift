@@ -41,8 +41,8 @@ struct PhotoResultView: View {
                             .frame(width: geo.size.width, height: geo.size.height)
 
                         if !displayFields.isEmpty {
-                            ForEach(displayFields) { field in
-                                translatedField(field, in: displayRect)
+                            ForEach(layoutFields(displayFields, in: displayRect)) { layout in
+                                fieldView(layout)
                                     .transition(.opacity)
                             }
                         }
@@ -121,91 +121,18 @@ struct PhotoResultView: View {
     private struct DisplayField: Identifiable {
         let id = UUID()
         let text: String
-        /// Прямоугольник в нормализованных координатах изображения (0...1).
-        let normalizedRect: CGRect
-        /// Наклон исходной строки в экранных координатах.
+        /// Центр строки в нормализованных координатах фото (0...1 по x и по y,
+        /// y растёт вниз). Точку, в отличие от отрезков, можно нормализовать
+        /// по ширине и высоте независимо — искажений это не даёт.
+        let centerNormalized: CGPoint
+        /// Размер поля (ширина/высота вдоль собственных осей строки, уже с
+        /// учётом её наклона) в пикселях исходного фото, а не в долях 0...1.
+        /// Это важно: доля от ширины и доля от высоты — разные единицы на
+        /// неквадратном фото, а тут одна и та же ось может смотреть и по x, и
+        /// по y в зависимости от угла поворота.
+        let sizeInImagePixels: CGSize
+        /// Наклон исходной строки, уже в системе координат экрана (y вниз).
         let angle: Double
-    }
-
-    /// Собирает строки Vision в логические группы. Если строки находятся в одной
-    /// текстовой области и образуют единый блок, перевод выводится одним полем.
-    /// Разнесённые по фотографии области остаются отдельными полями.
-    private func displayFields(for blocks: [RecognizedTextBlock], translated: [String]) -> [DisplayField] {
-        struct Group {
-            var indices: [Int]
-            var rect: CGRect
-            var angle: Double
-        }
-
-        guard !blocks.isEmpty else { return [] }
-
-        var groups: [Group] = []
-
-        for index in blocks.indices {
-            let block = blocks[index]
-            let rect = normalizedRect(for: block)
-            let angle = textAngle(for: block)
-            var bestGroup: Int?
-            var bestScore = -Double.infinity
-
-            for groupIndex in groups.indices {
-                let group = groups[groupIndex]
-                let angleDelta = abs(normalizedAngle(angle - group.angle))
-                guard angleDelta < .pi / 12 else { continue } // до 15°
-
-                let expanded = group.rect.insetBy(dx: -max(rect.width, group.rect.width) * 0.18,
-                                                   dy: -max(rect.height, group.rect.height) * 0.75)
-                let xOverlap = horizontalOverlap(rect, group.rect)
-                let closeEnough = expanded.intersects(rect) || xOverlap > 0.35
-                guard closeEnough else { continue }
-
-                // Сильнее предпочитаем строки, которые реально находятся одна
-                // над другой/рядом и имеют заметное горизонтальное пересечение.
-                let verticalGap = verticalDistance(rect, group.rect)
-                let heightScale = max(rect.height, group.rect.height, 0.001)
-                let proximity = max(0, 1 - verticalGap / (heightScale * 2.5))
-                let score = xOverlap * 2 + proximity - angleDelta * 0.5
-
-                if score > bestScore {
-                    bestScore = score
-                    bestGroup = groupIndex
-                }
-            }
-
-            if let groupIndex = bestGroup {
-                groups[groupIndex].indices.append(index)
-                groups[groupIndex].rect = groups[groupIndex].rect.union(rect)
-                let count = Double(groups[groupIndex].indices.count)
-                groups[groupIndex].angle = (groups[groupIndex].angle * (count - 1) + angle) / count
-            } else {
-                groups.append(Group(indices: [index], rect: rect, angle: angle))
-            }
-        }
-
-        // Vision обычно возвращает строки сверху вниз. Сортируем группы по
-        // положению, чтобы итоговый copied text оставался в естественном порядке.
-        groups.sort { a, b in
-            if abs(a.rect.midY - b.rect.midY) > 0.02 {
-                return a.rect.midY > b.rect.midY
-            }
-            return a.rect.minX < b.rect.minX
-        }
-
-        return groups.compactMap { group in
-            let text = group.indices
-                .sorted { lhs, rhs in
-                    let a = normalizedRect(for: blocks[lhs])
-                    let b = normalizedRect(for: blocks[rhs])
-                    if abs(a.midY - b.midY) > 0.01 { return a.midY > b.midY }
-                    return a.minX < b.minX
-                }
-                .map { translated[$0].trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-
-            guard !text.isEmpty else { return nil }
-            return DisplayField(text: text, normalizedRect: group.rect, angle: group.angle)
-        }
     }
 
     private func normalizedRect(for block: RecognizedTextBlock) -> CGRect {
@@ -219,9 +146,20 @@ struct PhotoResultView: View {
                       height: max(0.001, maxY - minY))
     }
 
+    /// Переводит нормализованную точку Vision (x, y в диапазоне 0...1, y растёт
+    /// вверх) в координаты самого фото в пикселях, с y, растущим вниз (как на
+    /// экране). Это нужно, чтобы дальше считать углы и размеры настоящей
+    /// евклидовой геометрией: photo почти никогда не квадратное, а разные
+    /// масштабы по x и по y как раз и «заваливали» угол наклона у повёрнутых
+    /// подписей (см. displayAngle ниже).
+    private func imageSpacePoint(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x * image.size.width, y: (1 - point.y) * image.size.height)
+    }
+
     private func textAngle(for block: RecognizedTextBlock) -> Double {
-        atan2(-(block.topRight.y - block.topLeft.y),
-              block.topRight.x - block.topLeft.x)
+        let topLeft = imageSpacePoint(block.topLeft)
+        let topRight = imageSpacePoint(block.topRight)
+        return atan2(topRight.y - topLeft.y, topRight.x - topLeft.x)
     }
 
     private func normalizedAngle(_ angle: Double) -> Double {
@@ -372,13 +310,20 @@ struct PhotoResultView: View {
             let vx = CGFloat(-sin(angle))
             let vy = CGFloat(cos(angle))
 
+            // Считаем в пикселях самого фото (imageSpacePoint), а не в сырых
+            // долях 0...1. Фото почти никогда не квадратное, поэтому доля по x
+            // и доля по y — разные по «физическому размеру» единицы: прямое
+            // cos/sin-проецирование по ним давало на наклонных строках (как
+            // подписи вокруг круглой навигационной панели пульта) неверный
+            // размер и смещённый центр — карточка «съезжала» и не помещалась
+            // в одну строку, хотя реального текста там было немного.
             let points = group.indices.flatMap { index -> [CGPoint] in
                 let block = blocks[index]
                 return [
-                    CGPoint(x: block.topLeft.x, y: 1 - block.topLeft.y),
-                    CGPoint(x: block.topRight.x, y: 1 - block.topRight.y),
-                    CGPoint(x: block.bottomLeft.x, y: 1 - block.bottomLeft.y),
-                    CGPoint(x: block.bottomRight.x, y: 1 - block.bottomRight.y)
+                    imageSpacePoint(block.topLeft),
+                    imageSpacePoint(block.topRight),
+                    imageSpacePoint(block.bottomLeft),
+                    imageSpacePoint(block.bottomRight)
                 ]
             }
 
@@ -390,54 +335,108 @@ struct PhotoResultView: View {
             let maxV = projectedV.max() ?? 1
 
             // minU/maxU и minV/maxV — размеры в собственной системе координат
-            // текста. Раньше здесь они ошибочно записывались как обычный CGRect: у
-            // наклонного текста width/height не совпадают с осями изображения. Из-за
-            // этого поле могло смещаться в сторону и становиться большим ромбом.
-            let localWidth = max(0.001, maxU - minU)
-            let localHeight = max(0.001, maxV - minV)
+            // текста, уже в пикселях фото.
+            let localWidth = max(1, maxU - minU)
+            let localHeight = max(1, maxV - minV)
             let centerU = (minU + maxU) * 0.5
             let centerV = (minV + maxV) * 0.5
             let centerX = centerU * ux + centerV * vx
             let centerY = centerU * uy + centerV * vy
 
-            // normalizedRect хранит центр/размеры в координатах Vision, а угол
-            // отдельно задаёт поворот. Это позволяет translatedField корректно
-            // позиционировать именно центр исходной надписи.
-            let visionRect = CGRect(
-                x: centerX - localWidth * 0.5,
-                y: 1 - centerY - localHeight * 0.5,
-                width: localWidth,
-                height: localHeight
+            let centerNormalized = CGPoint(
+                x: centerX / max(1, image.size.width),
+                y: centerY / max(1, image.size.height)
             )
 
-            return DisplayField(text: clean, normalizedRect: visionRect, angle: angle)
+            return DisplayField(
+                text: clean,
+                centerNormalized: centerNormalized,
+                sizeInImagePixels: CGSize(width: localWidth, height: localHeight),
+                angle: angle
+            )
         }
     }
 
-    private func translatedField(_ field: DisplayField, in displayRect: CGRect) -> some View {
+    private struct FieldLayout: Identifiable {
+        let id: UUID
+        let text: String
+        var frame: CGRect
+        let angle: Double
+        let fontSize: CGFloat
+        let lineLimit: Int?
+        let horizontalInset: CGFloat
+        let verticalInset: CGFloat
+    }
+
+    /// Считает независимую раскладку каждого поля (naturalLayout), а затем
+    /// раздвигает по вертикали те карточки, что пересекаются и при этом лежат
+    /// в одном текстовом столбце (заметный overlap по X). Именно такое
+    /// пересечение превращало плотный диалог в один нечитаемый ком текста
+    /// (см. первый скриншот): у каждой строки своя карточка, и как только
+    /// перевод оказывался чуть выше исходной строки, соседние карточки
+    /// наезжали друг на друга и сливались в сплошное пятно текста поверх
+    /// фото. Подписи кнопок на пульте лежат рядом, а не друг под другом,
+    /// поэтому overlap по X у них низкий и эта раскладка их не трогает.
+    private func layoutFields(_ fields: [DisplayField], in displayRect: CGRect) -> [FieldLayout] {
+        guard !fields.isEmpty else { return [] }
+
+        var layouts = fields.map { naturalLayout(for: $0, in: displayRect) }
+        let order = layouts.indices.sorted { layouts[$0].frame.minY < layouts[$1].frame.minY }
+
+        for position in 1..<order.count {
+            let currentIndex = order[position]
+            for previousPosition in 0..<position {
+                let previousIndex = order[previousPosition]
+                guard horizontalOverlap(layouts[previousIndex].frame, layouts[currentIndex].frame) > 0.2 else { continue }
+
+                let minGap: CGFloat = 3
+                let requiredTop = layouts[previousIndex].frame.maxY + minGap
+                if layouts[currentIndex].frame.minY < requiredTop {
+                    layouts[currentIndex].frame.origin.y = requiredTop
+                }
+            }
+        }
+
+        return layouts
+    }
+
+    private func naturalLayout(for field: DisplayField, in displayRect: CGRect) -> FieldLayout {
+        // Экран и фото имеют одинаковые пропорции (AVMakeRect сохраняет
+        // aspect ratio), поэтому масштаб «пиксели фото → пиксели экрана»
+        // одинаков по x и по y — можно использовать одно число.
+        let scale = image.size.width > 0 ? displayRect.width / image.size.width : 1
+        let centerScreen = CGPoint(
+            x: displayRect.minX + field.centerNormalized.x * displayRect.width,
+            y: displayRect.minY + field.centerNormalized.y * displayRect.height
+        )
+        let originalSize = CGSize(
+            width: field.sizeInImagePixels.width * scale,
+            height: field.sizeInImagePixels.height * scale
+        )
         let originalRect = CGRect(
-            x: displayRect.minX + field.normalizedRect.minX * displayRect.width,
-            y: displayRect.minY + (1 - field.normalizedRect.maxY) * displayRect.height,
-            width: field.normalizedRect.width * displayRect.width,
-            height: field.normalizedRect.height * displayRect.height
+            x: centerScreen.x - originalSize.width / 2,
+            y: centerScreen.y - originalSize.height / 2,
+            width: originalSize.width,
+            height: originalSize.height
         )
 
-        // Поле остаётся привязанным к исходной области. Не раздуваем его в 2–3
-        // раза: именно это раньше приводило к перекрытиям и к появлению перевода
-        // рядом с оригинальной надписью. Разрешаем лишь небольшой запас для
-        // длинного перевода, а недостающий объём компенсируем переносами и
-        // уменьшением шрифта.
+        // Поле остаётся привязанным к исходной области, но не строго её
+        // размером: русский перевод почти всегда длиннее английского
+        // оригинала, и если совсем не давать полю расти, текст просто не
+        // помещается («не влазит»). Основной способ вместить текст — ужать
+        // шрифт и перенести строки; расширение карточки — на крайний случай,
+        // а перекрытие с соседними карточками решает layoutFields ниже.
         let horizontalInset = max(4, min(10, originalRect.height * 0.20))
         let verticalInset = max(3, min(7, originalRect.height * 0.12))
         let preferredFont = max(12, min(22, originalRect.height * 0.72))
 
-        // На втором скриншоте («родной» Перевод) короткие подписи кнопок всегда
-        // остаются в одну строку — карточка просто ужимается по ширине и по
-        // шрифту, а не переносится на 2–3 строки, как было раньше. Поэтому
-        // сначала пытаемся ужать шрифт так, чтобы весь перевод влез в одну
-        // строку, и только если это совсем невозможно даже на минимальном
-        // читаемом размере — переходим к переносу строк (для редких длинных
-        // предложений).
+        // На эталонном скриншоте («родной» Перевод в приложении «Камера»)
+        // короткие подписи кнопок всегда остаются в одну строку — карточка
+        // просто ужимается по ширине и по шрифту, а не переносится на 2–3
+        // строки. Поэтому сначала пытаемся ужать шрифт так, чтобы весь
+        // перевод влез в одну строку, и только если это совсем невозможно
+        // даже на минимальном читаемом размере — переходим к переносу строк
+        // (для редких длинных предложений).
         let singleLineMinFont: CGFloat = 8
         let maxSingleLineWidth = max(originalRect.width, originalRect.width * 1.6)
         let singleLineAvailableWidth = max(1, maxSingleLineWidth - horizontalInset * 2)
@@ -453,7 +452,6 @@ struct PhotoResultView: View {
         // не из-за нехватки места, поэтому в одну строку их не сжимаем.
         let fitsOneLine = !field.text.contains("\n") && singleLineWidth <= singleLineAvailableWidth + 0.5
 
-        let content: Text
         let finalFontSize: CGFloat
         let fieldWidth: CGFloat
         let fieldHeight: CGFloat
@@ -473,15 +471,23 @@ struct PhotoResultView: View {
             let natural = measuredTextSize(
                 field.text,
                 fontSize: preferredFont,
-                maxWidth: max(1, originalRect.width * 1.35)
+                maxWidth: max(1, originalRect.width * 1.45)
             )
-            let maxFieldWidth = max(originalRect.width, originalRect.width * 1.35)
-            let maxFieldHeight = max(originalRect.height, originalRect.height * 1.55)
+            let maxFieldWidth = max(originalRect.width, originalRect.width * 1.45)
+            // У длинного перевода абзаца (диалог из первого скриншота) даём
+            // карточке заметно больше вертикального запаса, чем раньше
+            // (было максимум ×1.3) — иначе перевод обрезался/наезжал за
+            // пределы своей белой карточки прямо на фон. Раздвижку по
+            // вертикали между соседними карточками теперь берёт на себя
+            // layoutFields, поэтому щедрый рост здесь уже не приводит к
+            // «стене» слипшегося текста, как раньше. Абсолютный потолок в
+            // 60% высоты кадра — просто страховка от патологических случаев.
+            let maxFieldHeight = min(displayRect.height * 0.6, max(originalRect.height, originalRect.height * 2.4))
             fieldWidth = min(maxFieldWidth, max(originalRect.width, natural.width + horizontalInset * 2))
             fieldHeight = min(maxFieldHeight, max(originalRect.height, natural.height + verticalInset * 2))
             availableWidth = max(1, fieldWidth - horizontalInset * 2)
             availableHeight = max(1, fieldHeight - verticalInset * 2)
-            finalFontSize = max(10.5, fittingFontSize(
+            finalFontSize = max(9.5, fittingFontSize(
                 for: field.text,
                 maxWidth: availableWidth,
                 maxHeight: availableHeight,
@@ -489,27 +495,55 @@ struct PhotoResultView: View {
             ))
             lineLimit = nil
         }
-        content = Text(field.text)
 
-        return content
-            .font(.system(size: finalFontSize, weight: .semibold))
+        let frame = CGRect(
+            x: centerScreen.x - fieldWidth / 2,
+            y: centerScreen.y - fieldHeight / 2,
+            width: fieldWidth,
+            height: fieldHeight
+        )
+
+        return FieldLayout(
+            id: field.id,
+            text: field.text,
+            frame: frame,
+            angle: displayAngle(for: field.angle),
+            fontSize: finalFontSize,
+            lineLimit: lineLimit,
+            horizontalInset: horizontalInset,
+            verticalInset: verticalInset
+        )
+    }
+
+    private func fieldView(_ layout: FieldLayout) -> some View {
+        let availableWidth = max(1, layout.frame.width - layout.horizontalInset * 2)
+        let availableHeight = max(1, layout.frame.height - layout.verticalInset * 2)
+
+        return Text(layout.text)
+            .font(.system(size: layout.fontSize, weight: .semibold))
             .foregroundStyle(Color(red: 0.12, green: 0.15, blue: 0.13))
             .multilineTextAlignment(.leading)
-            .lineSpacing(max(1, finalFontSize * 0.08))
+            .lineSpacing(max(1, layout.fontSize * 0.08))
             .allowsTightening(true)
-            .lineLimit(lineLimit)
-            .minimumScaleFactor(lineLimit == 1 ? 0.85 : 1)
+            .lineLimit(layout.lineLimit)
+            .minimumScaleFactor(layout.lineLimit == 1 ? 0.85 : 1)
             .fixedSize(horizontal: false, vertical: true)
             .frame(width: availableWidth, height: availableHeight, alignment: .leading)
-            .padding(.horizontal, horizontalInset)
-            .padding(.vertical, verticalInset)
+            .padding(.horizontal, layout.horizontalInset)
+            .padding(.vertical, layout.verticalInset)
             .background(
-                Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.92),
+                Color(red: 1.0, green: 0.975, blue: 0.93).opacity(0.94),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
-            .frame(width: fieldWidth, height: fieldHeight)
-            .rotationEffect(.radians(displayAngle(for: field.angle)))
-            .position(x: originalRect.midX, y: originalRect.midY)
+            .overlay(
+                // Тонкая обводка помогает глазу разделить соседние карточки,
+                // даже когда они стоят почти впритык друг к другу.
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+            )
+            .frame(width: layout.frame.width, height: layout.frame.height)
+            .rotationEffect(.radians(layout.angle))
+            .position(x: layout.frame.midX, y: layout.frame.midY)
     }
 
     private func measuredLineWidth(_ text: String, fontSize: CGFloat) -> CGFloat {
@@ -543,18 +577,24 @@ struct PhotoResultView: View {
         return low
     }
 
-    /// Системный Перевод в приложении «Камера» (см. второй скриншот) всегда
-    /// рисует переведённый текст ровно по горизонтали, даже если сама подпись
-    /// на кнопке напечатана под углом (например, слова вокруг круглого
-    /// джойстика пульта). Раньше мы буквально поворачивали поле на угол
-    /// исходной строки — из-за этого подписи вокруг «крестовины» пульта
-    /// получались раздёрганными и нечитаемыми (как на первом скриншоте).
-    /// Теперь ощутимый поворот (типично 20°+ у круговых кнопок) обнуляется, и
-    /// остаётся лишь небольшая поправка на реальный наклон самого фото при
-    /// съёмке с руки.
+    /// Показываем реальный наклон исходной строки — как это делает системный
+    /// Перевод в приложении «Камера» (см. эталонный скриншот: подписи вокруг
+    /// круглой навигационной панели пульта повёрнуты каждая под свой угол,
+    /// вплоть до ~90°, и лежат ровно на своей кнопке). Раньше здесь заметный
+    /// поворот принудительно обнулялся — считалось, что причина «раздёрганных»
+    /// подписей в самом повороте. На самом деле дело было в том, что угол
+    /// считался неверно на неквадратном фото (см. textAngle) — сам по себе
+    /// поворот тут ни при чём и его нужно показывать. Единственное, что
+    /// стоит поправить — не показывать текст «вверх ногами», если Vision
+    /// вернул угол больше 90° по модулю.
     private func displayAngle(for angle: Double) -> Double {
-        let maxCorrection = Double.pi / 15 // ≈ 12°
-        return max(-maxCorrection, min(maxCorrection, angle))
+        var normalized = normalizedAngle(angle)
+        if normalized > .pi / 2 {
+            normalized -= .pi
+        } else if normalized < -.pi / 2 {
+            normalized += .pi
+        }
+        return normalized
     }
 
     private func measuredTextSize(_ text: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGSize {
