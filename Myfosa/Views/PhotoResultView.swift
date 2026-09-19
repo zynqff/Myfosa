@@ -11,7 +11,6 @@ struct PhotoResultView: View {
 
     @State private var isProcessing = true
     @State private var isPreparingModel = false
-    @State private var hasStartedProcessing = false
     @State private var processingTask: Task<Void, Never>?
     @State private var errorMessage: String?
     @State private var translatedText = ""
@@ -111,14 +110,23 @@ struct PhotoResultView: View {
         }
         // .task перезапускается при повторной раскладке/пересоздании узла
         // (особенность NavigationStack внутри fullScreenCover) сильнее, чем
-        // обычный onAppear — поэтому запуск управляется вручную и явно
-        // отменяется при уходе с экрана, а не отдаётся на откуп .task.
+        // обычный onAppear — поэтому запуск управляется вручную. Важно:
+        // onDisappear обнуляет processingTask, а не просто отменяет его —
+        // при прикреплении фото из галереи (в отличие от съёмки камерой)
+        // экран результата иногда коротко «моргает» appear→disappear→appear
+        // ещё до реального показа (из-за наложения анимаций закрытия
+        // пикера и показа fullScreenCover). Если бы processingTask
+        // оставался не-nil после такой отмены, повторный onAppear решил бы,
+        // что перевод уже запущен, и просто ничего не сделал бы — именно
+        // так и получалось «индикатор исчез, а перевода нет» на фото из
+        // галереи.
         .onAppear {
             guard processingTask == nil else { return }
             processingTask = Task { await process() }
         }
         .onDisappear {
             processingTask?.cancel()
+            processingTask = nil
         }
         .alert("Не удалось перевести фото", isPresented: Binding(
             get: { errorMessage != nil },
@@ -749,15 +757,6 @@ struct PhotoResultView: View {
     }
 
     private func process() async {
-        // .task на NavigationStack внутри GeometryReader иногда запускается
-        // повторно при повторной раскладке (особенность SwiftUI, не связана
-        // с логикой перевода). Без этой защиты запоздавший второй запуск
-        // мог упасть с ошибкой сети/модели уже ПОСЛЕ того, как первый успешно
-        // всё перевёл и показал — пользователь видел готовый перевод и
-        // алерт «Не удалось перевести фото» одновременно.
-        guard !hasStartedProcessing else { return }
-        hasStartedProcessing = true
-
         do {
             if !vm.isModelInstalled || vm.modelState == .unloaded {
                 isPreparingModel = true
