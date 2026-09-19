@@ -19,6 +19,21 @@ struct PhotoTranslateView: View {
         .background(Color(.systemBackground))
         .onAppear { camera.requestAccessAndConfigure() }
         .onDisappear { camera.stop() }
+        // PhotoResultView открывается поверх этого экрана через
+        // fullScreenCover — сам PhotoTranslateView при этом не скрывается
+        // (onDisappear не сработает), поэтому камера продолжала работать всё
+        // время, пока на экране уже показано фото/перевод. Это лишний расход
+        // батареи/CPU и не нужный в этот момент доступ к камере. Явно
+        // останавливаем сессию, как только фото сделано или прикреплено из
+        // галереи, и возобновляем её, когда пользователь возвращается к
+        // экрану камеры.
+        .onChange(of: resultImage == nil) { isNil in
+            if !isNil {
+                camera.stop()
+            } else {
+                camera.requestAccessAndConfigure()
+            }
+        }
         .photosPicker(isPresented: $showGalleryPicker, selection: $galleryItem, matching: .images)
         .onChange(of: galleryItem) { newItem in
             guard let newItem else { return }

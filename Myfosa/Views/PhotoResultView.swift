@@ -11,6 +11,8 @@ struct PhotoResultView: View {
 
     @State private var isProcessing = true
     @State private var isPreparingModel = false
+    @State private var hasStartedProcessing = false
+    @State private var processingTask: Task<Void, Never>?
     @State private var errorMessage: String?
     @State private var translatedText = ""
     @State private var displayFields: [DisplayField] = []
@@ -107,7 +109,17 @@ struct PhotoResultView: View {
                 }
             }
         }
-        .task { await process() }
+        // .task перезапускается при повторной раскладке/пересоздании узла
+        // (особенность NavigationStack внутри fullScreenCover) сильнее, чем
+        // обычный onAppear — поэтому запуск управляется вручную и явно
+        // отменяется при уходе с экрана, а не отдаётся на откуп .task.
+        .onAppear {
+            guard processingTask == nil else { return }
+            processingTask = Task { await process() }
+        }
+        .onDisappear {
+            processingTask?.cancel()
+        }
         .alert("Не удалось перевести фото", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -737,6 +749,15 @@ struct PhotoResultView: View {
     }
 
     private func process() async {
+        // .task на NavigationStack внутри GeometryReader иногда запускается
+        // повторно при повторной раскладке (особенность SwiftUI, не связана
+        // с логикой перевода). Без этой защиты запоздавший второй запуск
+        // мог упасть с ошибкой сети/модели уже ПОСЛЕ того, как первый успешно
+        // всё перевёл и показал — пользователь видел готовый перевод и
+        // алерт «Не удалось перевести фото» одновременно.
+        guard !hasStartedProcessing else { return }
+        hasStartedProcessing = true
+
         do {
             if !vm.isModelInstalled || vm.modelState == .unloaded {
                 isPreparingModel = true
@@ -744,8 +765,16 @@ struct PhotoResultView: View {
                     try await vm.ensureModelReady()
                 } catch {
                     isPreparingModel = false
-                    errorMessage = "Модель ещё не загружена. Дождитесь окончания загрузки, чтобы переводить фото."
                     isProcessing = false
+                    // Если к этому моменту задача уже отменена (например,
+                    // экран результата пересоздался и старый прогон
+                    // отменяется), ensureModelReady() может бросить обычную
+                    // ошибку сети/модели вместо чистой CancellationError —
+                    // это не настоящий сбой, а просто прерванный черновой
+                    // запуск, поэтому алерт в этом случае не показываем.
+                    if !Task.isCancelled {
+                        errorMessage = "Модель ещё не загружена. Дождитесь окончания загрузки, чтобы переводить фото."
+                    }
                     return
                 }
                 isPreparingModel = false
@@ -807,7 +836,14 @@ struct PhotoResultView: View {
         } catch is CancellationError {
             // Нормальная отмена задачи не является ошибкой интерфейса.
         } catch {
-            if translatedText.isEmpty {
+            // Если задача уже отменена, что бы ни бросил перевод в этот
+            // момент (не обязательно ровно CancellationError — сетевой слой
+            // или llama.cpp может вернуть свою собственную ошибку при
+            // прерывании) — это не настоящий сбой, а прерванный черновой
+            // прогон (например, экран результата пересоздался). Показываем
+            // ошибку только для НЕотменённой задачи и только если результата
+            // совсем нет — чтобы не перекрывать уже готовый перевод.
+            if !Task.isCancelled && translatedText.isEmpty && displayFields.isEmpty {
                 errorMessage = error.localizedDescription
             }
         }
