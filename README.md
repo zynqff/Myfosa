@@ -10,6 +10,7 @@
 2. Выполните `Scripts/bootstrap_llama.sh`.
 3. Добавьте полученный `build-apple/llama.xcframework` в `Vendor/` проекта и в target `Myfosa`.
 4. Соберите на реальном iPhone. Для simulator GPU Metal отключается в коде, как в официальном примере.
+5. 
 
 Скрипт фиксирует commit llama.cpp, чтобы релиз был воспроизводимым.
 
@@ -18,3 +19,5 @@
 Bundle ID в проекте: `com.SiaSoft.Myfosa` — замените на свой перед архивированием.
 
 Для App Store/TestFlight потребуется собственная Apple Developer Team и подпись. Для локальной установки можно использовать обычный provisioning через Xcode.
+
+Hi guys! (Zynqochka)
