@@ -1,6 +1,6 @@
 # Myfosa Privacy Policy
 
-**Effective date:** September 23, 2026
+**Effective date:** September 22, 2026
 **Version:** 1.0
 
 ## In short
