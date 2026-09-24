@@ -1,57 +1,59 @@
 # Myfosa
 
-Офлайн-переводчик для iOS. Языковая модель работает прямо на устройстве через [llama.cpp](https://github.com/ggml-org/llama.cpp) и Metal. Тексты, голос и фотографии не покидают телефон.
+An offline translator for iOS. A language model runs entirely on the device through [llama.cpp](https://github.com/ggml-org/llama.cpp) and Metal. Your text, voice and photos never leave the phone.
 
-## Возможности
+> The app interface is currently in Russian. Translation works between 33 languages.
 
-- **Перевод текста** на 33 языка с потоковым выводом результата.
-- **Голосовой ввод.** Распознавание речи на устройстве, если оно поддерживается для выбранного языка.
-- **Перевод по фото.** Текст на снимке распознаётся через Vision и переводится прямо на изображении. Снимок можно сделать камерой или выбрать из галереи.
-- **Озвучивание** перевода встроенным синтезатором речи iOS.
-- **История переводов** в локальной базе Core Data с удалением отдельных записей и полной очисткой.
-- **Автовыгрузка модели** из памяти по таймауту (30 сек – 10 мин) и при уходе приложения в фон.
-- **Обновление модели** без выпуска новой версии приложения: загрузка в фоне, проверка размера и SHA-256.
-- Светлая, тёмная и системная темы, обучение при первом запуске, iPhone и iPad.
+## Features
 
-Поддерживаемые языки: английский, русский, немецкий, французский, испанский, итальянский, португальский, китайский, японский, корейский, арабский, турецкий, нидерландский, польский, украинский, вьетнамский, тайский, индонезийский, малайский, хинди, бенгальский, персидский, иврит, чешский, греческий, румынский, венгерский, шведский, датский, финский, норвежский, словацкий, болгарский.
+- **Text translation** between 33 languages, with results streamed as they are generated.
+- **Voice input.** Speech recognition runs on the device when it is supported for the selected language.
+- **Photo translation.** Text in an image is recognized with Vision and translated. Use the camera or pick a photo from the library.
+- **Read aloud.** Translations are spoken with the built-in iOS speech synthesizer.
+- **Translation history** stored locally in Core Data, with per-item deletion and a full clear.
+- **Automatic model unloading** from memory after a timeout (30 s to 10 min) and when the app goes to the background.
+- **Model updates without an app release.** Background download with size and SHA-256 verification.
+- Light, dark and system themes, first-launch onboarding, iPhone and iPad.
 
-## Приватность
+Supported languages: English, Russian, German, French, Spanish, Italian, Portuguese, Chinese, Japanese, Korean, Arabic, Turkish, Dutch, Polish, Ukrainian, Vietnamese, Thai, Indonesian, Malay, Hindi, Bengali, Persian, Hebrew, Czech, Greek, Romanian, Hungarian, Swedish, Danish, Finnish, Norwegian, Slovak, Bulgarian.
 
-Перевод, распознавание текста на фото и озвучивание выполняются на устройстве. У приложения нет аккаунтов, рекламы и аналитики.
+## Privacy
 
-Сеть используется только для двух вещей: получения `config.json` и загрузки файла модели. Переводимый текст в этих запросах не передаётся. Если для языка нет распознавания речи на устройстве, iOS может обработать аудио на серверах Apple. Полный текст политики находится в `Myfosa/Views/PrivacyPolicyView.swift`. Перед релизом заполните константы в `PolicyConfig` (название разработчика, почта, дата).
+Translation, on-device text recognition and speech synthesis all run locally. The app has no accounts, no ads and no analytics.
 
-## Требования
+The network is used for two things only: fetching `config.json` and downloading the model file. No text you translate is sent in those requests. If on-device speech recognition is unavailable for a language, iOS may process the audio on Apple's servers. The full policy text lives in `Myfosa/Views/PrivacyPolicyView.swift`. Before releasing, fill in the constants in `PolicyConfig` (developer name, contact email, date).
+
+## Requirements
 
 | | |
 |---|---|
-| iOS | 16.0 и новее |
-| Устройство | Реальный iPhone или iPad (arm64). Сборки для симулятора нет: `llama.xcframework` содержит только слайс `ios-arm64` |
-| Для сборки | Mac, Xcode, Swift 5.9 |
-| Для пересборки llama | `git`, `cmake`, `python3` |
+| iOS | 16.0 or later |
+| Device | A physical iPhone or iPad (arm64). There is no simulator build: `llama.xcframework` ships only an `ios-arm64` slice |
+| To build | A Mac with Xcode, Swift 5.9 |
+| To rebuild llama | `git`, `cmake`, `python3` |
 
-## Быстрый старт
+## Getting started
 
-Готовый `Vendor/llama.xcframework` лежит в репозитории, поэтому пересобирать llama.cpp для обычной сборки не нужно.
+A prebuilt `Vendor/llama.xcframework` is committed to the repository, so you do not need to rebuild llama.cpp for a normal build.
 
-1. Откройте `Myfosa.xcodeproj` в Xcode.
-2. Смените Bundle ID (`com.SiaSoft.Myfosa`) на свой и выберите свою команду в Signing & Capabilities.
-3. Подключите iPhone и запустите схему `Myfosa`.
-4. При первом запуске приложение предложит скачать модель.
+1. Open `Myfosa.xcodeproj` in Xcode.
+2. Change the bundle identifier (`com.SiaSoft.Myfosa`) to your own and select your team under Signing & Capabilities.
+3. Connect an iPhone and run the `Myfosa` scheme.
+4. On first launch the app offers to download the model.
 
-## Пересборка llama.cpp
+## Rebuilding llama.cpp
 
-Проект использует форк [chaxu01/llama.cpp](https://github.com/chaxu01/llama.cpp) с зафиксированным коммитом `92c448af6`. В нём уже есть тип квантизации `Q2_0C` (2 бита), но нет для него Metal-ядер. Скрипт добавляет их поверх форка.
+The project uses the [chaxu01/llama.cpp](https://github.com/chaxu01/llama.cpp) fork pinned to commit `92c448af6`. It already contains the `Q2_0C` (2-bit) quantization type but has no Metal kernels for it. The bootstrap script adds them on top of the fork.
 
 ```bash
 Scripts/bootstrap_llama.sh
 ```
 
-Скрипт клонирует форк в `.build/llama.cpp`, применяет патч `Scripts/patch_q2_0c_metal.sh`, собирает `llama.xcframework` с включённым Metal и копирует результат в `Vendor/`. Фиксированный коммит делает сборку воспроизводимой.
+The script clones the fork into `.build/llama.cpp`, applies `Scripts/patch_q2_0c_metal.sh`, builds `llama.xcframework` with Metal enabled and copies the result into `Vendor/`. Pinning the commit keeps the build reproducible.
 
-## Конфигурация модели
+## Model configuration
 
-Приложение читает удалённый `config.json` и кэширует его в Application Support. Если сети нет, используется последняя сохранённая копия. Адрес задаётся один раз в `Myfosa/Services/AppConfig.swift` (`ConfigEndpoint.url`).
+The app reads a remote `config.json` and caches it in Application Support. When offline, it falls back to the last saved copy. The URL is defined once in `Myfosa/Services/AppConfig.swift` (`ConfigEndpoint.url`).
 
 ```json
 {
@@ -68,33 +70,33 @@ Scripts/bootstrap_llama.sh
 }
 ```
 
-Чтобы выпустить новую модель, загрузите файл, обновите `id`/`version`, `sizeBytes`, `sha256` и `url` в конфиге. Приложение предложит обновление в «Настройки → Проверить обновления». Старый файл удаляется только после того, как новый скачан и прошёл проверку целостности.
+To ship a new model, upload the file and update `id`/`version`, `sizeBytes`, `sha256` and `url` in the config. The app offers the update under Settings → Check for updates. The old file is removed only after the new one has been downloaded and verified.
 
-## Структура проекта
+## Project structure
 
 ```
 Myfosa/
-├── MyfosaApp.swift          Точка входа, тема, онбординг
-├── ViewModel.swift          Состояние приложения, загрузка/выгрузка модели, история
-├── Models/                  TranslationItem, список языков и их названия
+├── MyfosaApp.swift          Entry point, theme, onboarding
+├── ViewModel.swift          App state, model load/unload, history
+├── Models/                  TranslationItem, language list and display names
 ├── Services/
-│   ├── TranslatorService    Обёртка над llama.cpp (загрузка модели, потоковый перевод)
-│   ├── AppConfig            Удалённый config.json и его кэш
-│   ├── ModelDownloadService Фоновая загрузка модели
-│   ├── ModelStore           Хранение модели, проверка целостности
-│   ├── HistoryStore         История переводов (Core Data)
+│   ├── TranslatorService    llama.cpp wrapper (model loading, streaming translation)
+│   ├── AppConfig            Remote config.json and its cache
+│   ├── ModelDownloadService Background model download
+│   ├── ModelStore           Model storage and integrity checks
+│   ├── HistoryStore         Translation history (Core Data)
 │   ├── SpeechRecognizerService, SpeechSynthesizer
-│   ├── CameraService, TextRecognitionService   Камера и OCR (Vision)
-└── Views/                   SwiftUI-экраны: Перевод, Камера, История, Настройки, Онбординг
-Scripts/                     Сборка llama.xcframework с Q2_0C Metal
-Vendor/llama.xcframework     Предсобранный llama.cpp для iOS (arm64)
-codemagic.yaml               CI-сборка неподписанного IPA
+│   ├── CameraService, TextRecognitionService   Camera and OCR (Vision)
+└── Views/                   SwiftUI screens: Translate, Camera, History, Settings, Onboarding
+Scripts/                     Builds llama.xcframework with Q2_0C Metal kernels
+Vendor/llama.xcframework     Prebuilt llama.cpp for iOS (arm64)
+codemagic.yaml               CI build of an unsigned IPA
 ```
 
 ## CI
 
-`codemagic.yaml` собирает неподписанный `Myfosa-unsigned.ipa` при каждом пуше и теге в ветку `main`. Перед сборкой он проверяет, что `Vendor/llama.xcframework` есть в репозитории. Для подписи и загрузки в TestFlight или App Store нужны ваш Apple Developer аккаунт и сертификаты.
+`codemagic.yaml` builds an unsigned `Myfosa-unsigned.ipa` on every push and tag to `main`. Before building, it checks that `Vendor/llama.xcframework` is present in the repository. Signing and uploading to TestFlight or the App Store require your own Apple Developer account and certificates.
 
-## Лицензия
+## License
 
-Код проекта распространяется по лицензии [Apache 2.0](LICENSE). llama.cpp и ggml лицензируются отдельно (MIT).
+The project code is released under the [Apache 2.0 License](LICENSE). llama.cpp and ggml are licensed separately (MIT).
