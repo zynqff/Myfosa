@@ -38,7 +38,7 @@ struct PhotoTranslateView: View {
         .onChange(of: galleryItem) { newItem in
             guard let newItem else { return }
             Task {
-                if let data = try? await newItem.loadTransferable(type: Data.self), let image = UIImage(data: data) {
+                if let data = try? await newItem.loadTransferable(type: Data.self), let image = UIImage(data: data)?.normalizedForOCR() {
                     resultImage = image
                 }
                 galleryItem = nil
@@ -82,9 +82,9 @@ struct PhotoTranslateView: View {
 
     private var languagePairPill: some View {
         HStack(spacing: 10) {
-            languageMenu(selection: $vm.sourceLanguage)
+            languageMenu(selection: $vm.sourceLanguage, options: sourceLanguages)
             Image(systemName: "arrow.right").foregroundStyle(.white.opacity(0.8))
-            languageMenu(selection: $vm.targetLanguage)
+            languageMenu(selection: $vm.targetLanguage, options: supportedLanguages)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
@@ -92,9 +92,9 @@ struct PhotoTranslateView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    private func languageMenu(selection: Binding<String>) -> some View {
+    private func languageMenu(selection: Binding<String>, options: [String]) -> some View {
         Menu {
-            ForEach(supportedLanguages, id: \.self) { lang in
+            ForEach(options, id: \.self) { lang in
                 Button(languageAutonym(lang)) { selection.wrappedValue = lang }
             }
         } label: {
@@ -141,6 +141,8 @@ struct PhotoTranslateView: View {
         Task {
             do {
                 resultImage = try await camera.capturePhoto()
+            } catch CameraError.busy {
+                // Повторное нажатие на затвор — просто игнорируем.
             } catch {
                 errorMessage = error.localizedDescription
             }

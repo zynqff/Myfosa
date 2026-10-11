@@ -28,7 +28,8 @@ final class SpeechSynthesizer: NSObject, ObservableObject {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         prepareAudioSessionForPlayback()
         synthesizer.stopSpeaking(at: .immediate)
-        let code = speechLanguageCode(for: language)
+        // Если язык «Auto» — определяем его по самому тексту.
+        let code = speechLanguageCode(for: resolvedLanguage(language, for: text))
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: code) ?? AVSpeechSynthesisVoice(language: "en-US")
         synthesizer.speak(utterance)
@@ -49,7 +50,8 @@ final class SpeechSynthesizer: NSObject, ObservableObject {
         // didFinish/didCancel никогда не приходят.
         prepareAudioSessionForPlayback()
         synthesizer.stopSpeaking(at: .immediate)
-        let code = speechLanguageCode(for: language)
+        // Если язык «Auto» — определяем его по самому тексту.
+        let code = speechLanguageCode(for: resolvedLanguage(language, for: text))
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: code) ?? AVSpeechSynthesisVoice(language: "en-US")
         speakingID = id

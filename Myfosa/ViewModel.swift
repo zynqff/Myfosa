@@ -5,6 +5,25 @@ import os
 
 private let llamaDiagnosticsLogger = Logger(subsystem: "com.SiaSoft.Myfosa", category: "llama")
 
+/// Замок «поток токенов ещё актуален». onToken приходит с фонового потока и
+/// порождает отдельные Task на главном акторе; они могут выполниться уже ПОСЛЕ
+/// финального присваивания результата и дописать в конец перевода повторный
+/// хвост. Перед финальным присваиванием замок закрывается — опоздавшие токены
+/// отбрасываются.
+final class StreamGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = true
+
+    var isOpen: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return open
+    }
+
+    func close() {
+        lock.lock(); open = false; lock.unlock()
+    }
+}
+
 enum UpdateCheckStatus {
     case idle
     case checking
@@ -17,7 +36,15 @@ enum UpdateCheckStatus {
 final class TranslatorViewModel: ObservableObject {
     @Published var sourceText = ""
     @Published var preview = ""
-    @Published var sourceLanguage = "English"
+
+    /// true, пока перевод ещё не готов: идёт debounce, загрузка модели или
+    /// генерация. Пока флаг поднят, нельзя нажать «Далее»/Enter/галочку —
+    /// иначе в историю уходил бы устаревший или обрезанный перевод.
+    @Published private(set) var isPreviewStale = false
+    /// Ключ (языки + текст) последнего ПОЛНОСТЬЮ готового перевода. Если ключ не
+    /// изменился (например, дописали пробел в конце), перевод не перезапускается.
+    private var lastTranslatedKey = ""
+    @Published var sourceLanguage = autoLanguage
     @Published var targetLanguage = "Russian"
     @Published var history: [TranslationItem] = []
     @Published var modelState: ModelState = .unloaded
@@ -94,7 +121,7 @@ final class TranslatorViewModel: ObservableObject {
             // сервера подтягиваем следом, уже в фоне, не блокируя интерфейс.
             if let cached = await configService.loadCached() {
                 config = cached
-                modelURL = await modelStore.localURL(fileName: cached.model.fileName)
+                modelURL = await modelStore.installedModelURL()
                 await syncState()
             } else {
                 // Первый запуск, локального конфига ещё нет — тут без сети,
@@ -125,7 +152,7 @@ final class TranslatorViewModel: ObservableObject {
     private func refreshConfigSilently() async {
         if let c = try? await configService.load() {
             config = c
-            modelURL = await modelStore.localURL(fileName: c.model.fileName)
+            modelURL = await modelStore.installedModelURL()
             await syncState()
         }
     }
@@ -134,21 +161,36 @@ final class TranslatorViewModel: ObservableObject {
         do {
             let c = try await configService.load()
             config = c
-            modelURL = await modelStore.localURL(fileName: c.model.fileName)
+            modelURL = await modelStore.installedModelURL()
         } catch {
             errorMessage = error.localizedDescription
         }
         await syncState()
     }
 
-    /// Скачивает и устанавливает модель, только если установленной версии ещё нет.
+    /// Скачивает и устанавливает модель, только если на устройстве нет НИКАКОЙ модели.
     /// Используется при обычном использовании переводчика (первый запуск / первый ввод текста).
+    ///
+    /// Если модель уже стоит, а в удалённом конфиге появилась новая версия — это не повод
+    /// ни блокировать переводчик, ни молча качать гигабайты: обновление пользователь
+    /// запускает сам в Настройках → «Проверить обновления».
     func ensureModel() async throws {
-        guard let config else { throw ConfigError.invalidConfig }
-        if !(await modelStore.isModelInstalled(matching: config.model)) {
-            try await downloadAndInstall(model: config.model)
+        if let installedURL = await modelStore.installedModelURL() {
+            modelURL = installedURL
+            await syncState()
+            return
         }
-        modelURL = await modelStore.localURL(fileName: config.model.fileName)
+
+        // Первый запуск без сети: конфига ещё нет. Пробуем получить его сейчас —
+        // иначе пользователь видел бы вводящее в заблуждение «неверный формат
+        // конфигурации» вместо понятной сетевой ошибки.
+        if config == nil {
+            config = try await configService.load()
+        }
+        guard let config else { throw ConfigError.badResponse }
+
+        try await downloadAndInstall(model: config.model)
+        modelURL = await modelStore.installedModelURL()
         llamaDiagnosticsLogger.notice("ensureModel: id=\(config.model.id, privacy: .public) version=\(config.model.version, privacy: .public) file=\(config.model.fileName, privacy: .public) итоговый путь=\(self.modelURL?.path ?? "nil", privacy: .public)")
         await syncState()
     }
@@ -172,7 +214,12 @@ final class TranslatorViewModel: ObservableObject {
     }
 
     func beginTyping() {
-        guard !sourceText.isEmpty else { return }
+        guard !sourceText.isEmpty else {
+            // Текст стёрли до конца клавиатурой — без этого в нижнем поле
+            // оставался перевод уже несуществующего текста.
+            schedulePreview()
+            return
+        }
         Task {
             do {
                 if await translator.currentState() == .unloaded {
@@ -187,15 +234,41 @@ final class TranslatorViewModel: ObservableObject {
 
     func schedulePreview() {
         previewTask?.cancel()
-        guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+
+        let trimmed = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
             previewGeneration += 1 // инвалидируем ещё не завершившийся прогон
             preview = ""
+            lastTranslatedKey = ""
+            isPreviewStale = false
             return
         }
+
+        let sourceLang = sourceLanguage
+        let targetLang = targetLanguage
+        let key = "\(sourceLang)|\(targetLang)|\(trimmed)"
+
+        // Реально ничего не изменилось (пробел/перевод строки по краям или
+        // возврат к уже переведённому тексту) — не стираем и не перегенерируем.
+        if key == lastTranslatedKey, !preview.isEmpty {
+            previewGeneration += 1
+            isPreviewStale = false
+            return
+        }
+
         previewGeneration += 1
         let myGeneration = previewGeneration
-        preview = ""
+        isPreviewStale = true
+
+        // Старый перевод НЕ стираем, пока генерируется новый: он остаётся на
+        // экране и заменяется целиком, когда новый готов. Токены в реальном
+        // времени показываем только если поле было пустым — иначе вперемешку
+        // шёл бы старый и новый текст.
+        let streamLive = preview.isEmpty
+        let gate = StreamGate()
+
         previewTask = Task { [weak self] in
+            defer { gate.close() }
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled, let self else { return }
             do {
@@ -204,31 +277,51 @@ final class TranslatorViewModel: ObservableObject {
                     if let modelURL = self.modelURL { try await self.translator.loadModel(path: modelURL) }
                 }
                 let result = try await self.translator.translate(
-                    text: self.sourceText,
-                    sourceLang: self.sourceLanguage,
-                    targetLang: self.targetLanguage,
+                    text: trimmed,
+                    sourceLang: sourceLang,
+                    targetLang: targetLang,
                     onToken: { [weak self] piece in
+                        guard streamLive, gate.isOpen else { return }
                         Task { @MainActor in
-                            guard let self, self.previewGeneration == myGeneration else { return }
+                            guard gate.isOpen, let self, self.previewGeneration == myGeneration else { return }
                             self.preview += piece
                         }
                     }
                 )
-                // Финальное присваивание — подчищает пробелы по краям и служит
-                // единственным источником истины, если этот прогон всё ещё актуален.
+                // Замок закрываем ДО присваивания, чтобы опоздавшие токены не
+                // дописали повторный хвост к уже готовому переводу.
                 await MainActor.run {
+                    gate.close()
                     guard self.previewGeneration == myGeneration else { return }
                     self.preview = result
+                    self.lastTranslatedKey = key
+                    self.isPreviewStale = false
                 }
-            } catch { }
+            } catch {
+                await MainActor.run {
+                    gate.close()
+                    guard self.previewGeneration == myGeneration else { return }
+                    // Отмена (сворачивание приложения) — не ошибка: флаг остаётся
+                    // поднятым, перевод перезапустится при возврате в приложение.
+                    if error is CancellationError || Task.isCancelled { return }
+                    self.preview = ""
+                    self.lastTranslatedKey = ""
+                    self.isPreviewStale = false
+                    self.errorMessage = error.localizedDescription
+                }
+            }
         }
     }
 
     func finalize() {
+        // Пока перевод не завершён (идёт генерация / ожидание), подтверждать нечего.
+        guard !isPreviewStale else { return }
         let source = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         let translated = preview.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty, !translated.isEmpty else { return }
-        let item = TranslationItem(source: source, translated: translated, sourceLang: sourceLanguage, targetLang: targetLanguage, date: .now)
+        // При автоопределении в карточку пишем реально определённый язык.
+        let detectedSource = sourceLanguage == autoLanguage ? (detectLanguageName(of: source) ?? autoLanguage) : sourceLanguage
+        let item = TranslationItem(source: source, translated: translated, sourceLang: detectedSource, targetLang: targetLanguage, date: .now)
         // Пишем только в текущую (видимую на экране «Текст») сессию. В постоянный
         // архив («История») она уйдёт целиком при уходе приложения в фон —
         // см. appDidEnterBackground(). Вставляем в начало: карточка появляется
@@ -238,11 +331,28 @@ final class TranslatorViewModel: ObservableObject {
         previewGeneration += 1
         sourceText = ""
         preview = ""
+        lastTranslatedKey = ""
+        isPreviewStale = false
         scheduleIdleUnload()
     }
 
     func swapLanguages() {
-        let old = sourceLanguage; sourceLanguage = targetLanguage; targetLanguage = old
+        if sourceLanguage == autoLanguage {
+            // «Автоопределение» не может стать языком перевода: нижний язык
+            // становится исходным, а целевым — язык текущего текста (если он
+            // определился и отличается), иначе английский/русский.
+            let detected = detectLanguageName(of: sourceText)
+            let newTarget: String
+            if let detected, detected != targetLanguage {
+                newTarget = detected
+            } else {
+                newTarget = targetLanguage == "English" ? "Russian" : "English"
+            }
+            sourceLanguage = targetLanguage
+            targetLanguage = newTarget
+        } else {
+            let old = sourceLanguage; sourceLanguage = targetLanguage; targetLanguage = old
+        }
         schedulePreview()
     }
 
@@ -259,8 +369,12 @@ final class TranslatorViewModel: ObservableObject {
                 return
             }
             clearInput()
+            // При «Автоопределении» заранее неизвестно, на каком языке заговорят:
+            // распознавателю нужна конкретная локаль, берём язык устройства. Чтобы
+            // диктовать на другом языке — выберите его в списке явно.
+            let dictationLanguage = sourceLanguage == autoLanguage ? deviceLanguageName() : sourceLanguage
             speechRecognizer.start(
-                language: sourceLanguage,
+                language: dictationLanguage,
                 onPartialResult: { [weak self] text in
                     guard let self else { return }
                     self.sourceText = text
@@ -318,6 +432,8 @@ final class TranslatorViewModel: ObservableObject {
         previewGeneration += 1
         sourceText = ""
         preview = ""
+        lastTranslatedKey = ""
+        isPreviewStale = false
     }
 
     func clearScreen() { history.removeAll() }
@@ -362,7 +478,7 @@ final class TranslatorViewModel: ObservableObject {
     func installAvailableUpdate(_ remote: RemoteAppConfig) async {
         do {
             try await downloadAndInstall(model: remote.model)
-            modelURL = await modelStore.localURL(fileName: remote.model.fileName)
+            modelURL = await modelStore.installedModelURL()
             // Старая модель уже выгружена из памяти — при следующем переводе будет загружена новая.
             await translator.unloadModel()
             await syncState()
@@ -378,21 +494,44 @@ final class TranslatorViewModel: ObservableObject {
         showDeleteConfirmation = true
     }
 
-    /// Пользователь подтвердил удаление в диалоге. Показываем прогресс 0-100%, затем сообщение об успехе.
+    /// Пользователь подтвердил удаление в диалоге. Прогресс 0–100% отражает
+    /// реально выполненные шаги (выгрузка из памяти → удаление файла →
+    /// удаление метаданных → обновление состояния), а не таймер.
     func confirmDeleteModel() {
         guard !isDeletingModel else { return }
         Task {
             isDeletingModel = true
             deleteProgress = 0
+
+            // Шаг 1: выгрузить модель из памяти.
             await translator.unloadModel()
+            deleteProgress = 0.25
+
+            // Шаг 2: удалить файл модели.
             let fileName = await modelStore.installedMetadata()?.fileName
-            for step in 1...10 {
-                try? await Task.sleep(for: .milliseconds(70))
-                deleteProgress = Double(step) / 10.0
+            if let fileName {
+                do {
+                    try await modelStore.remove(fileName: fileName)
+                } catch {
+                    // Файл не удалился — метаданные не трогаем, чтобы не оставить
+                    // приложение в состоянии «модель есть, но не числится».
+                    await syncState()
+                    isDeletingModel = false
+                    errorMessage = error.localizedDescription
+                    return
+                }
             }
-            if let fileName { try? await modelStore.remove(fileName: fileName) }
+            deleteProgress = 0.6
+
+            // Шаг 3: удалить метаданные установленной модели.
             await modelStore.removeMetadata()
+            modelURL = nil
+            deleteProgress = 0.85
+
+            // Шаг 4: обновить состояние интерфейса.
             await syncState()
+            deleteProgress = 1
+
             isDeletingModel = false
             modelDeletedSuccess = true
         }
@@ -400,8 +539,20 @@ final class TranslatorViewModel: ObservableObject {
 
     func appDidEnterBackground() {
         idleTask?.cancel()
+        // Запись с микрофона и GPU-вычисления Metal в фоне запрещены системой
+        // (генерация, застигнутая сворачиванием, может завершиться крашем) —
+        // гасим диктовку и прерываем идущий перевод до выгрузки модели.
+        speechRecognizer.stop()
+        previewTask?.cancel()
         archiveSessionAndClearScreen()
         Task { await translator.unloadModel(); await syncState() }
+    }
+
+    /// Возврат в приложение: если пользователь оставил недописанный текст, а
+    /// перевод был прерван сворачиванием — пересчитываем его.
+    func appDidBecomeActive() {
+        guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        schedulePreview()
     }
 
     /// Переносит все переводы текущей (видимой) сессии в постоянный архив и
@@ -426,6 +577,6 @@ final class TranslatorViewModel: ObservableObject {
 
     func syncState() async {
         modelState = await translator.currentState()
-        if let config { isModelInstalled = await modelStore.isModelInstalled(matching: config.model) }
+        isModelInstalled = await modelStore.hasInstalledModel()
     }
 }

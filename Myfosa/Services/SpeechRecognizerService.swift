@@ -38,6 +38,11 @@ final class SpeechRecognizerService: ObservableObject {
 
     /// Текст, накопленный за уже завершившиеся сегменты этой сессии диктовки.
     private var committedText = ""
+    /// Последний (промежуточный) текст ТЕКУЩЕГО сегмента. Нужен, чтобы при
+    /// паузе не потерять сказанное: сегмент может закончиться ошибкой «речь не
+    /// обнаружена» без isFinal — тогда этот текст нигде больше не фиксировался,
+    /// и новый сегмент начинал с чистого листа (весь текст «слетал»).
+    private var lastSegmentText = ""
     private var onPartialResult: ((String) -> Void)?
 
     /// Растёт на каждый новый сегмент — колбэки от уже отменённого
@@ -47,6 +52,16 @@ final class SpeechRecognizerService: ObservableObject {
 
     private var silenceTask: Task<Void, Never>?
     private static let silenceTimeout: Duration = .seconds(10)
+
+    /// Защита от «горячего» цикла: если распознаватель стабильно падает сразу
+    /// после старта сегмента (например, нет модели языка и нет сети), мы раньше
+    /// бесконечно открывали новые сегменты без пауз и без единого сообщения
+    /// пользователю. Считаем подряд идущие мгновенные сбои и после порога
+    /// честно останавливаемся с ошибкой.
+    private var onError: ((Error) -> Void)?
+    private var segmentStartedAt = Date()
+    private var fastFailures = 0
+    private static let maxFastFailures = 5
 
     /// Запрашивает разрешения на микрофон и распознавание речи, если ещё не даны.
     /// Возвращает true, только если оба разрешения получены.
@@ -67,7 +82,10 @@ final class SpeechRecognizerService: ObservableObject {
     func start(language: String, onPartialResult: @escaping (String) -> Void, onError: @escaping (Error) -> Void) {
         stop() // на всякий случай гасим предыдущую сессию, если она была активна
         committedText = ""
+        lastSegmentText = ""
+        fastFailures = 0
         self.onPartialResult = onPartialResult
+        self.onError = onError
 
         let code = speechLanguageCode(for: language)
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: code)), recognizer.isAvailable else {
@@ -118,6 +136,8 @@ final class SpeechRecognizerService: ObservableObject {
         task?.cancel()
         segmentID += 1
         let mySegment = segmentID
+        segmentStartedAt = Date()
+        lastSegmentText = ""
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
@@ -131,19 +151,51 @@ final class SpeechRecognizerService: ObservableObject {
             Task { @MainActor in
                 guard let self, self.isListening, self.segmentID == mySegment else { return }
                 if let result {
+                    self.fastFailures = 0
                     self.resetSilenceTimer()
-                    let combined = self.combinedText(withCurrent: result.bestTranscription.formattedString)
+                    let current = result.bestTranscription.formattedString
+                    // Распознаватель иногда начинает транскрипцию «с нуля» прямо
+                    // внутри одной задачи (после паузы): текст резко становится
+                    // коротким и не продолжает прежний. Тогда прежний фрагмент
+                    // фиксируем, а не затираем.
+                    if self.looksLikeRestart(previous: self.lastSegmentText, current: current) {
+                        self.committedText = self.joined(self.committedText, self.lastSegmentText)
+                    }
+                    self.lastSegmentText = current
+                    let combined = self.combinedText(withCurrent: current)
                     self.onPartialResult?(combined)
                     if result.isFinal {
                         // Пауза в речи: фиксируем то, что уже распознано, и
                         // сразу открываем следующий сегмент — пользователь
                         // ничего не заметит, текст просто продолжит расти.
                         self.committedText = combined
+                        self.lastSegmentText = ""
                         self.beginSegment()
                     }
-                } else if error != nil {
+                } else if let error {
                     // Обычно это системное "речь не обнаружена" на паузе,
                     // а не реальный сбой — просто продолжаем слушать дальше.
+                    // Но если сегмент умирает практически мгновенно раз за
+                    // разом — это настоящая поломка, а не пауза в речи.
+                    if Date().timeIntervalSince(self.segmentStartedAt) < 1.0 {
+                        self.fastFailures += 1
+                    } else {
+                        self.fastFailures = 0
+                    }
+                    // Главное: сегмент закончился без isFinal — всё, что в нём
+                    // успели распознать, фиксируем, чтобы оно не пропало.
+                    self.committedText = self.joined(self.committedText, self.lastSegmentText)
+                    self.lastSegmentText = ""
+                    if self.fastFailures >= Self.maxFastFailures {
+                        let handler = self.onError
+                        self.stop()
+                        handler?(error)
+                        return
+                    }
+                    // Небольшая пауза перед следующим сегментом, чтобы не
+                    // крутить цикл на полной скорости.
+                    try? await Task.sleep(for: .milliseconds(200))
+                    guard self.isListening, self.segmentID == mySegment else { return }
                     self.beginSegment()
                 }
             }
@@ -151,9 +203,22 @@ final class SpeechRecognizerService: ObservableObject {
     }
 
     private func combinedText(withCurrent current: String) -> String {
-        if committedText.isEmpty { return current }
-        if current.isEmpty { return committedText }
-        return committedText + " " + current
+        joined(committedText, current)
+    }
+
+    private func joined(_ a: String, _ b: String) -> String {
+        if a.isEmpty { return b }
+        if b.isEmpty { return a }
+        return a + " " + b
+    }
+
+    /// true, если новый промежуточный результат — не уточнение прежнего, а
+    /// начало новой транскрипции: заметно короче и не является его началом.
+    /// Обычные правки распознавателя (пара символов) под это не попадают.
+    private func looksLikeRestart(previous: String, current: String) -> Bool {
+        guard previous.count >= 6, !current.isEmpty else { return false }
+        guard current.count * 2 < previous.count else { return false }
+        return !previous.hasPrefix(current)
     }
 
     /// Сбрасывает таймер тишины — вызывается на каждый новый распознанный
@@ -186,6 +251,8 @@ final class SpeechRecognizerService: ObservableObject {
         request = nil
         recognizer = nil
         committedText = ""
+        lastSegmentText = ""
+        onError = nil
         isListening = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }

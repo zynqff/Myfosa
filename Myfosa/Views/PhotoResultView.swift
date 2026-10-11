@@ -204,6 +204,30 @@ struct PhotoResultView: View {
         let indices: [Int]
     }
 
+    /// Границы строки в системе координат текста, повёрнутой на `angle`:
+    /// ось u идёт вдоль строки, ось v — перпендикулярно («вниз» от текста).
+    /// Единицы — пиксели фото.
+    private struct LocalExtent {
+        var minU: CGFloat
+        var maxU: CGFloat
+        var minV: CGFloat
+        var maxV: CGFloat
+        var centerU: CGFloat { (minU + maxU) / 2 }
+        var centerV: CGFloat { (minV + maxV) / 2 }
+    }
+
+    private func localExtent(of block: RecognizedTextBlock, angle: Double) -> LocalExtent {
+        let ux = CGFloat(cos(angle)), uy = CGFloat(sin(angle))
+        let vx = CGFloat(-sin(angle)), vy = CGFloat(cos(angle))
+        let points = [block.topLeft, block.topRight, block.bottomLeft, block.bottomRight].map(imageSpacePoint)
+        let us = points.map { $0.x * ux + $0.y * uy }
+        let vs = points.map { $0.x * vx + $0.y * vy }
+        return LocalExtent(
+            minU: us.min() ?? 0, maxU: us.max() ?? 0,
+            minV: vs.min() ?? 0, maxV: vs.max() ?? 0
+        )
+    }
+
     private func makeTextGroups(_ blocks: [RecognizedTextBlock]) -> [TextGroup] {
         // Vision отдаёт отдельные наблюдения для строк. Важно не сравнивать новую
         // строку с уже объединённым большим прямоугольником: это приводит к
@@ -216,23 +240,38 @@ struct PhotoResultView: View {
         }
 
         func lineCompatible(_ a: Int, _ b: Int) -> (Bool, Double) {
-            let ra = normalizedRect(for: blocks[a])
-            let rb = normalizedRect(for: blocks[b])
             let aa = textAngle(for: blocks[a])
             let ab = textAngle(for: blocks[b])
 
             let angleDelta = abs(normalizedAngle(aa - ab))
             guard angleDelta <= .pi / 18 else { return (false, -.greatestFiniteMagnitude) } // 10°
 
-            let height = max(0.001, min(ra.height, rb.height))
-            let maxHeight = max(ra.height, rb.height)
+            // ВСЕ измерения делаем в системе координат самого текста (ось u —
+            // вдоль строки, ось v — «вниз» от строки), в пикселях фото. Раньше
+            // здесь использовались осе-выровненные прямоугольники в долях 0...1:
+            // у текста, повёрнутого на 90° (съёмка боком), «высота» такого
+            // прямоугольника — это длина строки, а «ширина» — её высота, из-за
+            // чего строки не склеивались в абзацы (каждая переводилась отдельно,
+            // получались обрывки фраз и наложение плашек друг на друга).
+            let theta = atan2(sin(aa) + sin(ab), cos(aa) + cos(ab))
+            let ea = localExtent(of: blocks[a], angle: theta)
+            let eb = localExtent(of: blocks[b], angle: theta)
+
+            let heightA = max(1, ea.maxV - ea.minV)
+            let heightB = max(1, eb.maxV - eb.minV)
+            let widthA = max(1, ea.maxU - ea.minU)
+            let widthB = max(1, eb.maxU - eb.minU)
+
+            let height = min(heightA, heightB)
+            let maxHeight = max(heightA, heightB)
+
             let verticalGap: CGFloat
-            if ra.intersects(rb) {
+            if ea.maxV >= eb.minV && eb.maxV >= ea.minV {
                 verticalGap = 0
-            } else if ra.maxY < rb.minY {
-                verticalGap = rb.minY - ra.maxY
+            } else if ea.maxV < eb.minV {
+                verticalGap = eb.minV - ea.maxV
             } else {
-                verticalGap = ra.minY - rb.maxY
+                verticalGap = ea.minV - eb.maxV
             }
 
             // Строки одного абзаца обычно находятся на расстоянии порядка
@@ -241,32 +280,24 @@ struct PhotoResultView: View {
             // полный текст» под абзацем) в интерфейсах часто отстоят от
             // соседнего блока на такой же по величине зазор — расстояние
             // само по себе НЕ отличает «следующую строку абзаца» от
-            // «следующего элемента интерфейса» (проверено измерением на
-            // реальном скриншоте: оба случая дают тот же зазор в ~половину
-            // высоты строки). Поэтому порог по зазору заметно строже, чем
-            // раньше, а решающую роль играет соотношение размеров шрифта
+            // «следующего элемента интерфейса». Поэтому порог по зазору
+            // строгий, а решающую роль играет соотношение размеров шрифта
             // ниже.
             guard verticalGap <= maxHeight * 0.65 else { return (false, -.greatestFiniteMagnitude) }
 
-            let overlap = horizontalOverlap(ra, rb)
-            let leftAlignment = 1 - min(1, abs(ra.minX - rb.minX) / max(ra.width, max(rb.width, 0.001)))
+            let overlapLength = max(0, min(ea.maxU, eb.maxU) - max(ea.minU, eb.minU))
+            let overlap = overlapLength / min(widthA, widthB)
+            let leftAlignment = 1 - min(1, abs(ea.minU - eb.minU) / max(widthA, widthB))
 
-            // Для многострочного блока нужен либо заметный горизонтальный
-            // overlap, либо практически одинаковая левая граница. Простое
-            // нахождение на одной вертикали больше не является достаточным.
+            // Для многострочного блока нужен либо заметный перекрывающийся
+            // участок вдоль строки, либо практически одинаковая левая граница.
             guard overlap >= 0.55 || leftAlignment >= 0.72 else { return (false, -.greatestFiniteMagnitude) }
 
-            // Не склеиваем строки разного масштаба шрифта. Раньше порог
-            // (0.45) пропускал пары вроде «подпись-ярлык (мелкий шрифт) +
-            // абзац (крупный шрифт)» — на реальном скриншоте у таких пар
-            // соотношение высот около 0.78, и они с готовностью склеивались
-            // в один смысловой ком («Тема урока» + текст темы, «Задание» +
-            // текст задания + ссылка «Читать полный текст»). Порог поднят
-            // так, чтобы такие подпись/ссылка-к-абзацу пары больше не
-            // проходили, а настоящие перенесённые строки одного абзаца
-            // (шрифт практически идентичен, соотношение близко к 1) — по
-            // прежнему проходили свободно.
-            let sizeRatio = min(ra.height, rb.height) / max(ra.height, rb.height)
+            // Не склеиваем строки разного масштаба шрифта: подпись-ярлык
+            // (мелкий шрифт) и абзац (крупный) — разные смысловые блоки.
+            // Настоящие перенесённые строки одного абзаца дают отношение,
+            // близкое к 1.
+            let sizeRatio = min(heightA, heightB) / maxHeight
             guard sizeRatio >= 0.82 else { return (false, -.greatestFiniteMagnitude) }
 
             let score = Double(overlap * 3 + leftAlignment * 1.5 - verticalGap / height) - angleDelta * 2
@@ -322,7 +353,22 @@ struct PhotoResultView: View {
             if abs(a.rect.midY - b.rect.midY) > 0.02 { return a.rect.midY > b.rect.midY }
             return a.rect.minX < b.rect.minX
         }
-        return groups.map { TextGroup(indices: $0.indices) }
+        // Порядок строк внутри абзаца — по ОСИ ТЕКСТА, а не по оси экрана:
+        // у текста, повёрнутого на 90°, строки идут слева направо или справа
+        // налево, и сортировка «сверху вниз» перемешала бы их при склейке в
+        // один фрагмент для перевода.
+        return groups.map { group in
+            let sinSum = group.indices.reduce(0.0) { $0 + sin(textAngle(for: blocks[$1])) }
+            let cosSum = group.indices.reduce(0.0) { $0 + cos(textAngle(for: blocks[$1])) }
+            let groupAngle = atan2(sinSum, cosSum)
+            let sorted = group.indices.sorted { lhs, rhs in
+                let l = localExtent(of: blocks[lhs], angle: groupAngle)
+                let r = localExtent(of: blocks[rhs], angle: groupAngle)
+                if l.centerV != r.centerV { return l.centerV < r.centerV }
+                return l.centerU < r.centerU
+            }
+            return TextGroup(indices: sorted)
+        }
     }
 
     private func makeDisplayFields(
@@ -632,9 +678,12 @@ struct PhotoResultView: View {
             .lineSpacing(max(1, layout.fontSize * 0.08))
             .allowsTightening(true)
             .lineLimit(layout.lineLimit)
-            .minimumScaleFactor(layout.lineLimit == 1 ? 0.85 : 1)
-            .fixedSize(horizontal: false, vertical: true)
+            // Раньше здесь стоял .fixedSize(vertical: true): текст, не влезший в
+            // рамку, просто вылезал за неё и налезал на соседние карточки.
+            // Теперь он ограничен рамкой и при нехватке места уменьшается.
+            .minimumScaleFactor(layout.lineLimit == 1 ? 0.85 : 0.5)
             .frame(width: availableWidth, height: availableHeight, alignment: .leading)
+            .clipped()
             .padding(.horizontal, layout.horizontalInset)
             .padding(.vertical, layout.verticalInset)
             .background(
@@ -756,6 +805,10 @@ struct PhotoResultView: View {
             }
     }
 
+    // @MainActor: функция меняет @State-свойства (translatedText, displayFields…).
+    // Без этого она выполнялась в фоновом пуле потоков и меняла состояние
+    // SwiftUI не с главного потока.
+    @MainActor
     private func process() async {
         do {
             if !vm.isModelInstalled || vm.modelState == .unloaded {
@@ -799,13 +852,20 @@ struct PhotoResultView: View {
                     .filter { !$0.isEmpty }
                     .joined(separator: "\n")
 
+                // Замок отсекает токены, которые из-за асинхронной доставки
+                // доезжают уже после финального присваивания и дописывали
+                // к готовому переводу повторный хвост.
+                let gate = StreamGate()
+                defer { gate.close() }
+
                 let finalTranslation = try await vm.translateStandalone(
                     source,
                     from: vm.sourceLanguage,
                     to: vm.targetLanguage,
                     onToken: { piece in
-                        guard !piece.isEmpty else { return }
+                        guard !piece.isEmpty, gate.isOpen else { return }
                         Task { @MainActor in
+                            guard gate.isOpen else { return }
                             progressiveTranslations[groupIndex] += piece
                             displayFields = makeDisplayFields(
                                 from: sourceBlocks,
@@ -819,6 +879,7 @@ struct PhotoResultView: View {
                     }
                 )
 
+                gate.close()
                 progressiveTranslations[groupIndex] = finalTranslation
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 displayFields = makeDisplayFields(

@@ -50,14 +50,39 @@ actor ModelStore {
         return exists(fileName: meta.fileName)
     }
 
+    /// Есть ли на устройстве любая рабочая модель (метаданные + файл на диске),
+    /// независимо от того, какая версия сейчас описана в удалённом конфиге.
+    /// Новая версия в конфиге — это повод предложить обновление в Настройках,
+    /// а не повод блокировать переводчик экраном «Скачайте модель».
+    func hasInstalledModel() -> Bool {
+        guard let meta = installedMetadata() else { return false }
+        return exists(fileName: meta.fileName)
+    }
+
+    /// Путь к файлу установленной модели (по метаданным), если она есть.
+    func installedModelURL() -> URL? {
+        guard let meta = installedMetadata(), exists(fileName: meta.fileName) else { return nil }
+        return localURL(fileName: meta.fileName)
+    }
+
     func verify(url: URL, expectedSize: Int64, expectedSHA256: String?) throws {
         let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
         if let size = attrs[.size] as? NSNumber, expectedSize > 0, size.int64Value != expectedSize {
             throw ModelStoreError.integrity
         }
         if let expectedSHA256, !expectedSHA256.isEmpty {
-            let data = try Data(contentsOf: url)
-            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            // Считаем хеш потоком по кускам. Раньше файл целиком читался в
+            // память (Data(contentsOf:)) — для модели в сотни мегабайт/гигабайты
+            // это приводило к завершению приложения системой из-за нехватки памяти.
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var hasher = SHA256()
+            while true {
+                let chunk = try autoreleasepool { try handle.read(upToCount: 4 * 1024 * 1024) }
+                guard let chunk, !chunk.isEmpty else { break }
+                hasher.update(data: chunk)
+            }
+            let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             guard hash.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
                 throw ModelStoreError.integrity
             }
@@ -69,18 +94,31 @@ actor ModelStore {
     /// файл полностью скачан и прошёл проверку целостности.
     func commit(downloadedFile: URL, model: RemoteAppConfig.ModelInfo, previousFileName: String?) throws -> URL {
         let destination = localURL(fileName: model.fileName)
-        if let previousFileName, previousFileName != model.fileName {
-            try? FileManager.default.removeItem(at: localURL(fileName: previousFileName))
+        let fm = FileManager.default
+
+        // Сначала ставим новый файл на место, и только потом трогаем старый.
+        // Раньше старая модель удалялась ДО moveItem — если перенос падал,
+        // пользователь оставался вообще без модели, а installed.json указывал
+        // на несуществующий файл.
+        if fm.fileExists(atPath: destination.path) {
+            _ = try fm.replaceItemAt(destination, withItemAt: downloadedFile)
+        } else {
+            try fm.moveItem(at: downloadedFile, to: destination)
         }
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: downloadedFile, to: destination)
+
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var mutable = destination
         try? mutable.setResourceValues(values)
+
         let metadata = InstalledModelMetadata(id: model.id, version: model.version, fileName: model.fileName, sizeBytes: model.sizeBytes, sha256: model.sha256)
         let data = try JSONEncoder().encode(metadata)
         try data.write(to: metadataURL, options: .atomic)
+
+        // Метаданные уже указывают на новый файл — теперь старый можно удалить.
+        if let previousFileName, previousFileName != model.fileName {
+            try? fm.removeItem(at: localURL(fileName: previousFileName))
+        }
         return destination
     }
 }

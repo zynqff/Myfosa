@@ -173,6 +173,11 @@ actor LlamaTranslatorService: TranslatorService {
         } catch let error as TranslatorError {
             throw error
 
+        } catch is CancellationError {
+            // Отмена — не ошибка перевода: пробрасываем как есть, чтобы
+            // вызывающий код мог отличить её от реального сбоя.
+            throw CancellationError()
+
         } catch {
             throw TranslatorError.inferenceFailed
         }
@@ -199,6 +204,14 @@ actor LlamaContext {
 
     private var invalidUTF8: [CChar] = []
 
+    /// Ёмкость batch (в токенах). Промпт длиннее этого значения декодируется
+    /// порциями — иначе запись в batch.token/pos/seq_id выходила за выделенную
+    /// память (heap overflow → краш на длинном тексте).
+    private static let batchCapacity: Int32 = 512
+
+    /// Температура генерации.
+    private static let temperature: Float = 0.7
+
     private init(
         model: OpaquePointer,
         context: OpaquePointer
@@ -208,15 +221,27 @@ actor LlamaContext {
         self.vocab = llama_model_get_vocab(model)
 
         self.batch = llama_batch_init(
-            512,
+            Self.batchCapacity,
             0,
             1
         )
 
-        // Детерминированный greedy sampler.
-        // Используется для диагностики качества первых токенов
-        // без влияния temperature/top-k/top-p/random seed.
-        self.sampling = llama_sampler_init_greedy()
+        // Сэмплер: температура 0.7, затем случайный выбор из распределения.
+        let chain = llama_sampler_chain_init(
+            llama_sampler_chain_default_params()
+        )
+
+        llama_sampler_chain_add(
+            chain,
+            llama_sampler_init_temp(Self.temperature)
+        )
+
+        llama_sampler_chain_add(
+            chain,
+            llama_sampler_init_dist(UInt32.random(in: 0...UInt32.max))
+        )
+
+        self.sampling = chain
     }
 
     deinit {
@@ -240,11 +265,7 @@ actor LlamaContext {
 
         var modelParams = llama_model_default_params()
 
-        // Metal offload включён: Q2_0C теперь имеет реальный Metal-кернел
-        // (см. Scripts/patch_q2_0c_metal.sh, применяется поверх форка
-        // chaxu01/llama.cpp @ 92c448af6). Патч проверен построчно и
-        // применяется чисто, но НЕ обкатан на реальном GPU — первый
-        // запуск тестируйте на устройстве, а не сразу в релиз.
+        // Полный offload слоёв на GPU через Metal.
         modelParams.n_gpu_layers = 999
 
         llamaLogger.notice(
@@ -343,8 +364,11 @@ actor LlamaContext {
         // Поэтому llama_tokenize не должен добавлять его второй раз.
         let shouldAddBOS = false
 
+        // Текст пользователя в системный лог не пишем (.private): приложение
+        // обещает, что переводимый текст не покидает устройство, а .public-логи
+        // попадают в sysdiagnose и Console.app.
         llamaLogger.notice(
-            "generate: chat_template hunyuan-dense применён, prompt=\(formattedPrompt, privacy: .public)"
+            "generate: chat_template hunyuan-dense применён, длина prompt = \(formattedPrompt.utf8.count, privacy: .public) байт"
         )
 
         // parseSpecial = true нужен для того, чтобы специальные токены
@@ -354,6 +378,12 @@ actor LlamaContext {
             addBOS: shouldAddBOS,
             parseSpecial: true
         )
+
+        // Если токенизация не удалась (вернула пустой массив) — дальше идти
+        // нельзя: ниже обращение к batch.logits[n_tokens - 1] давало индекс -1.
+        guard !tokens.isEmpty else {
+            throw TranslatorError.inferenceFailed
+        }
 
         // Сколько места осталось после prompt.
         let available =
@@ -369,36 +399,55 @@ actor LlamaContext {
                 available
             )
 
-        // Заполняем batch prompt-токенами.
-        batch.n_tokens = 0
+        // Декодируем prompt порциями не больше ёмкости batch.
+        // Logits нужны только у самого последнего токена всего prompt.
+        let chunkSize = Int(Self.batchCapacity)
+        var offset = 0
 
-        for (i, token) in tokens.enumerated() {
+        while offset < tokens.count {
 
-            batch.token[Int(batch.n_tokens)] = token
+            if Task.isCancelled {
+                throw CancellationError()
+            }
 
-            batch.pos[Int(batch.n_tokens)] = Int32(i)
+            let end = min(offset + chunkSize, tokens.count)
+            let isLastChunk = end == tokens.count
 
-            batch.n_seq_id[Int(batch.n_tokens)] = 1
+            batch.n_tokens = 0
 
-            batch.seq_id[Int(batch.n_tokens)]![0] = 0
+            for i in offset..<end {
 
-            batch.logits[Int(batch.n_tokens)] = 0
+                let slot = Int(batch.n_tokens)
 
-            batch.n_tokens += 1
+                batch.token[slot] = tokens[i]
+
+                batch.pos[slot] = Int32(i)
+
+                batch.n_seq_id[slot] = 1
+
+                batch.seq_id[slot]![0] = 0
+
+                batch.logits[slot] = 0
+
+                batch.n_tokens += 1
+            }
+
+            if isLastChunk {
+                batch.logits[Int(batch.n_tokens) - 1] = 1
+            }
+
+            guard llama_decode(
+                context,
+                batch
+            ) == 0 else {
+
+                throw TranslatorError.inferenceFailed
+            }
+
+            offset = end
         }
 
-        // Получаем logits последнего prompt-токена.
-        batch.logits[Int(batch.n_tokens) - 1] = 1
-
-        guard llama_decode(
-            context,
-            batch
-        ) == 0 else {
-
-            throw TranslatorError.inferenceFailed
-        }
-
-        nCur = batch.n_tokens
+        nCur = Int32(tokens.count)
 
         invalidUTF8.removeAll(
             keepingCapacity: true
@@ -466,6 +515,15 @@ actor LlamaContext {
 
                     // Потоковый вывод в UI.
                     onToken(str)
+
+                } else if invalidUTF8.count > 8 {
+                    // Максимальная длина корректной UTF-8 последовательности —
+                    // 4 байта. Если накопилось больше, а строка так и не
+                    // стала валидной, байты битые: сбрасываем их, иначе
+                    // весь дальнейший вывод навсегда «застрял» бы в буфере.
+                    invalidUTF8.removeAll(
+                        keepingCapacity: true
+                    )
                 }
             }
 
@@ -506,32 +564,41 @@ actor LlamaContext {
 
         let count = text.utf8.count
 
-        let capacity =
-            count +
-            (addBOS ? 1 : 0) +
-            1
+        var capacity = count + (addBOS ? 1 : 0) + 8
 
-        let ptr = UnsafeMutablePointer<llama_token>.allocate(
-            capacity: capacity
-        )
+        // llama_tokenize возвращает отрицательное значение (-нужный размер),
+        // если буфер мал — тогда повторяем с точным размером, а не отдаём
+        // пустой результат.
+        for _ in 0..<2 {
 
-        defer {
-            ptr.deallocate()
+            let ptr = UnsafeMutablePointer<llama_token>.allocate(
+                capacity: capacity
+            )
+
+            defer {
+                ptr.deallocate()
+            }
+
+            let n = llama_tokenize(
+                vocab,
+                text,
+                Int32(count),
+                ptr,
+                Int32(capacity),
+                addBOS,
+                parseSpecial
+            )
+
+            if n >= 0 {
+                return (0..<Int(n)).map {
+                    ptr[$0]
+                }
+            }
+
+            capacity = Int(-n) + 8
         }
 
-        let n = llama_tokenize(
-            vocab,
-            text,
-            Int32(count),
-            ptr,
-            Int32(capacity),
-            addBOS,
-            parseSpecial
-        )
-
-        return (0..<max(0, Int(n))).map {
-            ptr[$0]
-        }
+        return []
     }
 
     /// Формирует chat prompt из GGUF metadata HY-MT2.

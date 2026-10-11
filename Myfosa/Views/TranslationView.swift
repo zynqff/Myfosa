@@ -15,7 +15,10 @@ struct TranslationView: View {
                     // Проверка наличия модели ещё не завершена — ничего не
                     // рисуем, чтобы не мелькнуть сначала неверным экраном.
                     Color.clear
-                } else if vm.config != nil && !vm.isModelInstalled {
+                } else if !vm.isModelInstalled {
+                    // Раньше условие требовало ещё и vm.config != nil: при первом
+                    // запуске без сети (конфига нет) показывался композер, а
+                    // ввод текста падал с ошибкой «неверный формат конфигурации».
                     DownloadPromptView()
                 } else {
                     translateCard
@@ -65,6 +68,7 @@ struct TranslationView: View {
                     if focused {
                         Button { finalizeOrDismiss() } label: { Image(systemName: "checkmark.circle.fill") }
                             .tint(MyfosaTheme.brandStart)
+                            .disabled(vm.isPreviewStale)
                     }
                 }
             }
@@ -79,7 +83,13 @@ struct TranslationView: View {
             }
         }
         .animation(.spring(response: 0.3), value: vm.speechRecognizer.isListening)
-        .onChange(of: scenePhase) { phase in if phase == .background { vm.appDidEnterBackground() } }
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .background: vm.appDidEnterBackground()
+            case .active: vm.appDidBecomeActive()
+            default: break
+            }
+        }
         .alert("Ошибка", isPresented: Binding(get: { vm.errorMessage != nil }, set: { if !$0 { vm.errorMessage = nil } })) { Button("OK") {} } message: { Text(vm.errorMessage ?? "") }
         .alert(
             "Очистить текущий перевод?",
@@ -114,7 +124,7 @@ struct TranslationView: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
                 Picker("", selection: $vm.sourceLanguage) {
-                    ForEach(supportedLanguages, id: \.self) { lang in
+                    ForEach(sourceLanguages, id: \.self) { lang in
                         Text(languageAutonym(lang)).tag(lang)
                     }
                 }
@@ -218,6 +228,7 @@ struct TranslationView: View {
                     Button("Далее") { finalizeOrDismiss() }
                         .buttonStyle(.borderedProminent)
                         .tint(MyfosaTheme.brandStart)
+                        .disabled(vm.isPreviewStale)
                 }
                 .padding(16)
             }
@@ -272,6 +283,9 @@ struct TranslationView: View {
     /// Если готов — подтверждает перевод (уходит в историю) и сразу возвращает
     /// фокус в очищенное поле для следующего перевода, не пряча клавиатуру.
     private func finalizeOrDismiss() {
+        // Перевод ещё генерируется (или ждёт debounce) — ни Enter, ни «Далее»,
+        // ни галочка ничего не делают, пока он не завершится.
+        if vm.isPreviewStale { return }
         if vm.preview.isEmpty {
             focused = false
         } else {

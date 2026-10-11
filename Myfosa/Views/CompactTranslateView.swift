@@ -5,7 +5,6 @@ import SwiftUI
 struct CompactTranslateView: View {
     @EnvironmentObject var vm: TranslatorViewModel
     @FocusState private var focused: Bool
-    private let speech = SpeechSynthesizer()
 
     var body: some View {
         VStack {
@@ -13,7 +12,7 @@ struct CompactTranslateView: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    languagePicker(selection: $vm.sourceLanguage)
+                    languagePicker(selection: $vm.sourceLanguage, options: sourceLanguages)
                     Spacer()
                     Button { vm.swapLanguages() } label: {
                         Image(systemName: "arrow.up.arrow.down")
@@ -21,7 +20,7 @@ struct CompactTranslateView: View {
                     }
                     .buttonStyle(.plain)
                     Spacer()
-                    languagePicker(selection: $vm.targetLanguage)
+                    languagePicker(selection: $vm.targetLanguage, options: supportedLanguages)
                 }
 
                 TextField("Введите текст", text: $vm.sourceText, axis: .vertical)
@@ -39,7 +38,7 @@ struct CompactTranslateView: View {
                             .foregroundStyle(MyfosaTheme.brandStart)
                         Spacer()
                         Button {
-                            speech.speak(vm.preview, language: vm.targetLanguage)
+                            vm.speech.speak(vm.preview, language: vm.targetLanguage)
                         } label: {
                             Image(systemName: "speaker.wave.2.fill")
                                 .foregroundStyle(MyfosaTheme.brandStart)
@@ -57,9 +56,9 @@ struct CompactTranslateView: View {
         }
     }
 
-    private func languagePicker(selection: Binding<String>) -> some View {
+    private func languagePicker(selection: Binding<String>, options: [String]) -> some View {
         Picker("", selection: selection) {
-            ForEach(supportedLanguages, id: \.self) { lang in
+            ForEach(options, id: \.self) { lang in
                 Text(languageAutonym(lang)).tag(lang)
             }
         }

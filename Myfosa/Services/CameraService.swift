@@ -3,7 +3,13 @@ import UIKit
 
 enum CameraError: LocalizedError {
     case captureFailed
-    var errorDescription: String? { "Не удалось сделать снимок." }
+    case busy
+    var errorDescription: String? {
+        switch self {
+        case .captureFailed: return "Не удалось сделать снимок."
+        case .busy: return "Снимок уже обрабатывается."
+        }
+    }
 }
 
 /// Обёртка над AVCaptureSession: живой превью камеры, съёмка фото, фонарик.
@@ -27,6 +33,24 @@ final class CameraService: NSObject, ObservableObject {
     /// получает EXIF-метаданные "портрет", и распознавание текста/наложение
     /// перевода на фото затем работает неправильно.
     private var currentVideoOrientation: AVCaptureVideoOrientation = .portrait
+
+    /// iOS 17+: RotationCoordinator сам следит за положением телефона (по
+    /// датчикам движения) и подсказывает правильный угол поворота для снимка.
+    /// Старое свойство videoOrientation на новых iOS объявлено устаревшим и
+    /// при съёмке боком могло оставлять фото «повёрнутым на 90°». Хранится как
+    /// Any, чтобы не требовать iOS 17 для всего класса.
+    private var rotationCoordinatorStorage: Any?
+
+    private func captureDevice() -> AVCaptureDevice? {
+        session.inputs.compactMap { ($0 as? AVCaptureDeviceInput)?.device }.first
+    }
+
+    private func prepareRotationCoordinator() {
+        if #available(iOS 17.0, *) {
+            guard rotationCoordinatorStorage == nil, let device = captureDevice() else { return }
+            rotationCoordinatorStorage = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: nil)
+        }
+    }
 
     override init() {
         super.init()
@@ -142,10 +166,18 @@ final class CameraService: NSObject, ObservableObject {
 
             self.session.commitConfiguration()
             self.session.startRunning()
+
+            // Даём координатору время определить положение телефона до первого снимка.
+            Task { @MainActor [weak self] in
+                self?.prepareRotationCoordinator()
+            }
         }
     }
 
     func stop() {
+        // Выключаем фонарик вместе с сессией: иначе флаг isTorchOn оставался
+        // true, а при возврате на экран иконка и реальное состояние расходились.
+        if isTorchOn { toggleTorch() }
         sessionQueue.async { [session] in if session.isRunning { session.stopRunning() } }
     }
 
@@ -163,10 +195,25 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     func capturePhoto() async throws -> UIImage {
-        try await withCheckedThrowingContinuation { continuation in
+        // Повторное нажатие на затвор, пока предыдущий снимок обрабатывается,
+        // затирало photoContinuation — первый вызов никогда не завершался
+        // (зависшая задача и утечка continuation). Игнорируем лишние нажатия.
+        guard photoContinuation == nil else { throw CameraError.busy }
+        return try await withCheckedThrowingContinuation { continuation in
             self.photoContinuation = continuation
-            if let connection = photoOutput.connection(with: .video), connection.isVideoOrientationSupported {
-                connection.videoOrientation = currentVideoOrientation
+            if let connection = photoOutput.connection(with: .video) {
+                prepareRotationCoordinator()
+                var applied = false
+                if #available(iOS 17.0, *), let coordinator = rotationCoordinatorStorage as? AVCaptureDevice.RotationCoordinator {
+                    let angle = coordinator.videoRotationAngleForHorizonLevelCapture
+                    if connection.isVideoRotationAngleSupported(angle) {
+                        connection.videoRotationAngle = angle
+                        applied = true
+                    }
+                }
+                if !applied, connection.isVideoOrientationSupported {
+                    connection.videoOrientation = currentVideoOrientation
+                }
             }
             let settings = AVCapturePhotoSettings()
             if photoOutput.supportedFlashModes.contains(.on) {
@@ -190,7 +237,9 @@ extension CameraService: AVCapturePhotoCaptureDelegate {
                 photoContinuation = nil
                 return
             }
-            photoContinuation?.resume(returning: image)
+            // Приводим снимок к ориентации .up и разумному размеру: распознавание
+            // и наложение перевода дальше работают с «честными» пикселями.
+            photoContinuation?.resume(returning: image.normalizedForOCR())
             photoContinuation = nil
         }
     }
