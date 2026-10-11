@@ -227,9 +227,11 @@ actor LlamaContext {
         )
 
         // Сэмплер: температура 0.7, затем случайный выбор из распределения.
+        // llama_sampler_chain_init в этом заголовке возвращает Optional
+        // (nil только при нехватке памяти) — разворачиваем явно.
         let chain = llama_sampler_chain_init(
             llama_sampler_chain_default_params()
-        )
+        )!
 
         llama_sampler_chain_add(
             chain,
