@@ -156,15 +156,52 @@ actor LlamaTranslatorService: TranslatorService {
             }
         }
 
-        let prompt =
-            "Translate the following segment into \(targetLang), without additional explanation: \(text)"
+        // Длинный текст переводим КУСКАМИ (по предложениям/абзацам), а не одним
+        // промптом. Раньше весь текст шёл в один запрос: контекст всего 2048
+        // токенов на промпт И ответ вместе, поэтому на большом тексте перевод
+        // молча обрывался на середине, а первые слова появлялись только после
+        // обработки всего промпта целиком. Теперь первые слова приходят после
+        // первого (небольшого) куска, а длина текста ограничена не контекстом.
+        let chunks = TextChunker.split(
+            text,
+            firstMaxBytes: 600,
+            maxBytes: 1200
+        )
+
+        guard !chunks.isEmpty else {
+            return ""
+        }
 
         do {
-            let result = try await context.generate(
-                prompt: prompt,
-                maxTokens: 2048,
-                onToken: onToken
-            )
+            var result = ""
+
+            for (index, chunk) in chunks.enumerated() {
+
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+
+                let prompt =
+                    "Translate the following segment into \(targetLang), without additional explanation: \(chunk.text)"
+
+                let part = try await context.generate(
+                    prompt: prompt,
+                    maxTokens: 1024,
+                    onToken: onToken
+                )
+
+                result += part.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+
+                // Разделитель между кусками (пробел / перенос строки) — как в
+                // исходном тексте. Сразу отдаём его и в поток, чтобы
+                // потоковый вывод выглядел так же, как итоговый.
+                if index < chunks.count - 1, !chunk.trailing.isEmpty {
+                    result += chunk.trailing
+                    onToken(chunk.trailing)
+                }
+            }
 
             return result.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -339,6 +376,8 @@ actor LlamaContext {
         onToken: @escaping @Sendable (String) -> Void
     ) throws -> String {
 
+        let startedAt = DispatchTime.now()
+
         // Полностью очищаем KV-cache перед каждым новым переводом.
         // Это важно, поскольку один и тот же context используется
         // для нескольких переводов.
@@ -451,11 +490,18 @@ actor LlamaContext {
 
         nCur = Int32(tokens.count)
 
+        let prefillMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000
+        llamaLogger.notice(
+            "generate: prompt \(tokens.count, privacy: .public) токенов, обработан за \(Int(prefillMs), privacy: .public) мс"
+        )
+
         invalidUTF8.removeAll(
             keepingCapacity: true
         )
 
         var output = ""
+        var generatedTokens = 0
+        var finishedNaturally = false
 
         for _ in 0..<effectiveMaxTokens {
 
@@ -496,8 +542,11 @@ actor LlamaContext {
                 token == 120001   // <｜hy_end_of_sentence｜>
 
             if isEndOfGeneration {
+                finishedNaturally = true
                 break
             }
+
+            generatedTokens += 1
 
             // Преобразуем токен в UTF-8 fragment.
             let chars = tokenToPiece(token)
@@ -554,6 +603,11 @@ actor LlamaContext {
 
             nCur += 1
         }
+
+        let totalMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000
+        llamaLogger.notice(
+            "generate: \(generatedTokens, privacy: .public) токенов за \(Int(totalMs), privacy: .public) мс всего, естественное завершение: \(finishedNaturally, privacy: .public)"
+        )
 
         return output
     }
@@ -680,5 +734,103 @@ actor LlamaContext {
         )
 
         return []
+    }
+}
+
+/// Делит длинный текст на куски для поэтапного перевода. Режет по границам
+/// предложений (средствами Foundation, с учётом языка), абзацы и пробелы
+/// между кусками сохраняются в `trailing`, чтобы итоговый перевод имел ту же
+/// структуру, что и исходный текст. Лимит считается в БАЙТАХ UTF-8: так он
+/// одинаково разумен и для латиницы/кириллицы, и для иероглифов.
+enum TextChunker {
+
+    struct Chunk {
+        /// Текст куска без пробелов/переводов строк по краям.
+        let text: String
+        /// Пробелы/переводы строк, которые шли после куска в исходнике.
+        let trailing: String
+    }
+
+    static func split(_ text: String, firstMaxBytes: Int, maxBytes: Int) -> [Chunk] {
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        // 1. Предложения вместе с завершающими пробелами/переводами строк
+        //    (enclosingRange) — в сумме они в точности дают исходный текст.
+        var units: [String] = []
+        trimmed.enumerateSubstrings(
+            in: trimmed.startIndex..<trimmed.endIndex,
+            options: [.bySentences, .substringNotRequired]
+        ) { _, _, enclosing, _ in
+            units.append(String(trimmed[enclosing]))
+        }
+        if units.isEmpty { units = [trimmed] }
+
+        // 2. Одиночные «предложения» длиннее лимита (нет знаков препинания,
+        //    сплошной поток) режем по пробелам / по символам.
+        var expanded: [String] = []
+        for unit in units {
+            if unit.utf8.count <= maxBytes {
+                expanded.append(unit)
+            } else {
+                expanded.append(contentsOf: hardSplit(unit, maxBytes: maxBytes))
+            }
+        }
+
+        // 3. Жадно собираем куски до лимита. Первый кусок — поменьше, чтобы
+        //    первые слова перевода появились как можно скорее.
+        var chunks: [Chunk] = []
+        var current = ""
+
+        func flush() {
+            let core = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            defer { current = "" }
+            guard !core.isEmpty else { return }
+            var trailing = ""
+            if let range = current.range(of: core, options: .backwards) {
+                trailing = String(current[range.upperBound...])
+            }
+            chunks.append(Chunk(text: core, trailing: trailing))
+        }
+
+        for unit in expanded {
+            let limit = chunks.isEmpty ? firstMaxBytes : maxBytes
+            if !current.isEmpty, current.utf8.count + unit.utf8.count > limit {
+                flush()
+            }
+            current += unit
+        }
+        flush()
+
+        return chunks
+    }
+
+    private static func hardSplit(_ text: String, maxBytes: Int) -> [String] {
+        var result: [String] = []
+        var rest = Substring(text)
+
+        while rest.utf8.count > maxBytes {
+            var bytes = 0
+            var index = rest.startIndex
+            var lastSpace: String.Index?
+
+            while index < rest.endIndex {
+                let character = rest[index]
+                let size = character.utf8.count
+                if bytes + size > maxBytes { break }
+                bytes += size
+                index = rest.index(after: index)
+                if character.isWhitespace { lastSpace = index }
+            }
+
+            let cut = lastSpace ?? index
+            if cut == rest.startIndex { break } // страховка от бесконечного цикла
+            result.append(String(rest[..<cut]))
+            rest = rest[cut...]
+        }
+
+        if !rest.isEmpty { result.append(String(rest)) }
+        return result
     }
 }

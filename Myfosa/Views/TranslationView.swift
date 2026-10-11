@@ -21,29 +21,39 @@ struct TranslationView: View {
                     // ввод текста падал с ошибкой «неверный формат конфигурации».
                     DownloadPromptView()
                 } else {
-                    translateCard
-
+                    // Карточка перевода и история лежат в ОДНОМ ScrollView.
+                    // Раньше карточка была прибита сверху и делила экран с
+                    // историей: на длинном тексте нижнее поле зажималось над
+                    // клавиатурой и обрезалось многоточием, а верхнее
+                    // прокручивалось само по себе. Теперь карточка растёт вместе
+                    // с текстом, а прокручивается вся страница.
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(spacing: 12) {
+                            VStack(spacing: 0) {
                                 Color.clear.frame(height: 1).id("top")
-                                if vm.history.isEmpty {
-                                    emptyState
+
+                                translateCard
+
+                                LazyVStack(spacing: 12) {
+                                    if vm.history.isEmpty {
+                                        emptyState
+                                    }
+                                    ForEach(vm.history) { item in
+                                        TranslationCardView(item: item, onDelete: {
+                                            vm.deleteFromSession(item)
+                                        })
+                                        .transition(.move(edge: .top).combined(with: .opacity))
+                                    }
                                 }
-                                ForEach(vm.history) { item in
-                                    TranslationCardView(item: item, onDelete: {
-                                        vm.deleteFromSession(item)
-                                    })
-                                    .transition(.move(edge: .top).combined(with: .opacity))
-                                }
+                                .padding()
+                                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: vm.history.count)
                             }
-                            .padding()
-                            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: vm.history.count)
                         }
-                        // Прокрутка истории вверх скрывает клавиатуру; чтобы показать
-                        // её снова — нужно нажать на поле ввода. Тот же жест сворачивает
+                        // Клавиатура убирается жестом вниз по странице (а не при
+                        // любой прокрутке — иначе чтение длинного перевода
+                        // постоянно её прятало бы). Тот же жест сворачивает
                         // открытую свайпом мусорку у карточек.
-                        .scrollDismissesKeyboard(.immediately)
+                        .scrollDismissesKeyboard(.interactively)
                         .simultaneousGesture(DragGesture(minimumDistance: 8).onChanged { _ in
                             NotificationCenter.default.post(name: .collapseCardSwipe, object: nil)
                         })
@@ -120,6 +130,20 @@ struct TranslationView: View {
     // не прячется) — чтобы сразу продолжать печатать следующий перевод, а предыдущий
     // остаётся в истории выше, где доступны только озвучка и копирование.
 
+    /// Размер шрифта карточки зависит от длины текста: короткая фраза —
+    /// крупно, длинный текст — мельче, чтобы он занимал разумное место. Берём
+    /// большую из длин (оригинал/перевод), чтобы оба поля были одного размера.
+    private var composerFontSize: CGFloat {
+        let length = max(vm.sourceText.count, vm.preview.count)
+        switch length {
+        case ..<60: return 28
+        case ..<140: return 24
+        case ..<280: return 20
+        case ..<600: return 18
+        default: return 16
+        }
+    }
+
     private var translateCard: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 10) {
@@ -138,9 +162,11 @@ struct TranslationView: View {
                         vm.speechRecognizer.isListening ? listeningPlaceholder(for: vm.sourceLanguage) : enterTextPlaceholder(for: vm.sourceLanguage),
                         text: $vm.sourceText, axis: .vertical
                     )
-                    .font(.system(size: 24, weight: .bold))
+                    .font(.system(size: composerFontSize, weight: .bold))
                     .focused($focused)
-                    .lineLimit(1...6)
+                    // Без верхнего предела: поле растёт по высоте вместе с
+                    // текстом (раньше после 6 строк оно прокручивалось внутри).
+                    .lineLimit(1...)
                     .onChange(of: vm.sourceText) { _ in
                         vm.beginTyping()
                     }
@@ -196,8 +222,10 @@ struct TranslationView: View {
 
                 HStack(alignment: .top, spacing: 8) {
                     Text(vm.preview.isEmpty ? enterTextPlaceholder(for: vm.targetLanguage) : vm.preview)
-                        .font(.system(size: 24, weight: .bold))
+                        .font(.system(size: composerFontSize, weight: .bold))
                         .foregroundStyle(vm.preview.isEmpty ? Color.secondary : MyfosaTheme.brandStart)
+                        // Показываем перевод целиком, без многоточия.
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .onTapGesture { selectBottomField() }
@@ -234,6 +262,7 @@ struct TranslationView: View {
             }
         }
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 24))
+        .animation(.easeInOut(duration: 0.15), value: composerFontSize)
         .padding(.horizontal)
         .padding(.bottom, 12)
     }
